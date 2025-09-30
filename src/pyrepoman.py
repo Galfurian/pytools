@@ -1,0 +1,127 @@
+#!/usr/bin/env python3
+
+"""Check git repositories for uncommitted changes and unpushed branches."""
+
+import argparse
+import logging
+import os
+import subprocess
+
+
+class ColorFormatter(logging.Formatter):
+    COLORS = {
+        logging.INFO: "\033[32m",  # Green
+        logging.WARNING: "\033[33m",  # Yellow
+        logging.ERROR: "\033[31m",  # Red
+        logging.CRITICAL: "\033[41m",  # Red background
+    }
+    RESET = "\033[0m"
+
+    def format(self, record):
+        color = self.COLORS.get(record.levelno, "")
+        message = super().format(record)
+        if color:
+            message = f"{color}{message}{self.RESET}"
+        return message
+
+
+def is_git_repo(path):
+    return os.path.isdir(os.path.join(path, ".git"))
+
+
+def get_uncommitted_changes(repo_path):
+    result = subprocess.run(
+        ["git", "status", "--porcelain"], cwd=repo_path, capture_output=True, text=True
+    )
+    changes = result.stdout.strip()
+    return changes if changes else None
+
+
+def get_unpushed_branches(repo_path):
+    # Get branches and their upstreams
+    result = subprocess.run(
+        [
+            "git",
+            "for-each-ref",
+            "--format=%(refname:short) %(upstream:short)",
+            "refs/heads",
+        ],
+        cwd=repo_path,
+        capture_output=True,
+        text=True,
+    )
+    branches = result.stdout.strip().split("\n")
+    unpushed = []
+    for branch_line in branches:
+        if branch_line.strip():
+            parts = branch_line.split()
+            branch = parts[0]
+            upstream = parts[1] if len(parts) > 1 and parts[1].strip() else None
+            if upstream:
+                # Check if branch is ahead of upstream
+                ahead_result = subprocess.run(
+                    ["git", "rev-list", "--count", f"{upstream}..{branch}"],
+                    cwd=repo_path,
+                    capture_output=True,
+                    text=True,
+                )
+                if (
+                    ahead_result.returncode == 0
+                    and int(ahead_result.stdout.strip() or "0") > 0
+                ):
+                    unpushed.append(f"{branch} (ahead of {upstream})")
+            else:
+                # No upstream set
+                unpushed.append(f"{branch} (no upstream)")
+    return unpushed if unpushed else None
+
+
+def scan_repos(root_path):
+    unstable_repos = []
+    for dirpath, dirnames, _ in os.walk(root_path):
+        if is_git_repo(dirpath):
+            changes = get_uncommitted_changes(dirpath)
+            unpushed = get_unpushed_branches(dirpath)
+            if changes or unpushed:
+                unstable_repos.append(
+                    {"path": dirpath, "uncommitted": changes, "unpushed": unpushed}
+                )
+            # Skip recursing into .git directories
+            dirnames[:] = [d for d in dirnames if d != ".git"]
+    return unstable_repos
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        description="Check git repositories for uncommitted changes and unpushed branches."
+    )
+    parser.add_argument(
+        "root_path", type=str, help="Root path to scan for git repositories"
+    )
+    args = parser.parse_args()
+
+    handler = logging.StreamHandler()
+    handler.setFormatter(ColorFormatter("%(message)s"))
+    logging.basicConfig(level=logging.INFO, handlers=[handler])
+
+    root = args.root_path
+    repos = scan_repos(root)
+    if repos:
+        logging.info("Unstable repositories:")
+        for repo in repos:
+            fullpath = os.path.abspath(repo["path"])
+            logging.info(f"\n{fullpath}:")
+            if repo["uncommitted"]:
+                logging.error("  Uncommitted changes:")
+                for line in repo["uncommitted"].split("\n"):
+                    logging.error(f"    {line}")
+            if repo["unpushed"]:
+                logging.warning("  Unpushed branches:")
+                for branch in repo["unpushed"]:
+                    logging.warning(f"    {branch}")
+    else:
+        logging.info("All repositories are stable.")
+
+
+if __name__ == "__main__":
+    main()
