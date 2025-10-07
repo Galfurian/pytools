@@ -6,6 +6,7 @@ A collection of Python utility scripts for common tasks.
 
 - **pypress**: Compress a file or folder into a .tar.gz or .zip archive.
 - **pyrepoman**: Check git repositories for uncommitted changes and unpushed branches.
+- **pydu**: Display disk usage of files and directories in a human-readable format.
 - **install**: Install all scripts from `src/` to a bin directory for easy command-line access.
 
 ## Installation
