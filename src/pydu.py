@@ -947,6 +947,11 @@ def main() -> None:
 
     # Get absolute path and scan directory
     abs_path = os.path.abspath(args.path)
+    
+    # Validate that the path exists
+    if not os.path.exists(abs_path):
+        logger.error(f"The path '{abs_path}' does not exist.")
+        sys.exit(1)
 
     # Set up progress tracking
     scanned_count = 0
