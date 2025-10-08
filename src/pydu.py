@@ -16,9 +16,17 @@ import os
 import sys
 import time
 from dataclasses import dataclass, asdict, field
+from enum import Enum
 from typing import Callable
 
 logger = logging.getLogger(__name__)
+
+
+class NodeType(Enum):
+    """Enumeration of filesystem node types."""
+    FILE = "file"
+    DIRECTORY = "directory"
+    SYMLINK = "symlink"
 
 
 class ColorFormatter(logging.Formatter):
@@ -68,10 +76,12 @@ class TreeNode:
             The total size in bytes (for directories, includes all contents).
         mtime (float):
             The modification time as a Unix timestamp.
-        children (list[TreeNode] | None):
-            List of child nodes (None for files).
+        children (list[TreeNode]):
+            List of child nodes (empty for files).
         parent (TreeNode | None):
             Parent node (None for root).
+        node_type (NodeType):
+            Type of node: FILE, DIRECTORY, or SYMLINK.
 
     """
 
@@ -80,6 +90,7 @@ class TreeNode:
     mtime: float
     children: list["TreeNode"] = field(default_factory=list)
     parent: "TreeNode | None" = None
+    node_type: NodeType = NodeType.DIRECTORY
 
     def get_path(self) -> str:
         """Get the full path from root to this node."""
@@ -447,6 +458,7 @@ def build_tree(
                                 mtime=file_mtime,
                                 children=[],
                                 parent=node,
+                                node_type=NodeType.FILE,
                             )
                         )
 
@@ -549,7 +561,7 @@ def compute_grouped_summary(node: TreeNode) -> dict[str, int]:
 
     def traverse(current_node: TreeNode):
         nonlocal file_size, dir_size
-        if current_node.children is None:
+        if current_node.node_type == NodeType.FILE:
             # It's a file
             file_size += current_node.size
         else:
@@ -576,7 +588,7 @@ def compute_file_types(node: TreeNode) -> dict[str, int]:
     types = {}
 
     def traverse(current_node: TreeNode):
-        if current_node.children is None:
+        if current_node.node_type == NodeType.FILE:
             # It's a file
             _, ext = os.path.splitext(current_node.name)
             ext = ext.lower() if ext else "(no extension)"
@@ -605,7 +617,7 @@ def collect_all_nodes(node: TreeNode, include_files: bool = True) -> list[TreeNo
     nodes = []
 
     def traverse(current_node: TreeNode):
-        if current_node.children is None:
+        if current_node.node_type == NodeType.FILE:
             if include_files:
                 nodes.append(current_node)
         else:
@@ -652,8 +664,8 @@ def export_to_csv(node: TreeNode, include_files: bool = True) -> str:
         current_path = (
             os.path.join(path, current_node.name) if path else current_node.name
         )
-        node_type = "file" if current_node.children is None else "directory"
-        if current_node.children is None:
+        node_type = current_node.node_type.value
+        if current_node.node_type == NodeType.FILE:
             if include_files:
                 writer.writerow(
                     [current_path, current_node.size, current_node.mtime, node_type]
@@ -741,7 +753,7 @@ def print_tree(
         bar_str = f"{bar} "
 
     # Print current item
-    if node.children is None:
+    if node.node_type == NodeType.FILE:
         # File
         print(f"{bar_str}{line_prefix}{node.name} {s}")
     else:
@@ -749,7 +761,7 @@ def print_tree(
         print(f"{bar_str}{line_prefix}{node.name}/ {s}")
 
     # Stop recursion if no children or max depth reached
-    if node.children is None or (max_depth is not None and depth >= max_depth):
+    if node.node_type == NodeType.FILE or (max_depth is not None and depth >= max_depth):
         return
 
     # Sort children based on criteria
@@ -813,7 +825,10 @@ def main() -> None:
         help="Path to analyze (default: current directory)",
     )
     parser.add_argument(
-        "-a", "--all", action="store_true", help="Show files as well as directories"
+        "-a",
+        "--all",
+        action="store_true",
+        help="Show files as well as directories",
     )
     parser.add_argument(
         "-H",
@@ -1031,7 +1046,7 @@ def main() -> None:
         sorted_nodes = sorted(all_nodes, key=lambda n: n.size, reverse=True)[: args.top]
         for i, node in enumerate(sorted_nodes, 1):
             s = color_size(node.size, args.human_readable, use_color)
-            item_type = "file" if node.children is None else "dir"
+            item_type = node.node_type.value
             print(f"{i}. {node.get_path()} ({item_type}): {s}")
     elif args.json:
         # Export as JSON
