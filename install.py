@@ -3,7 +3,6 @@
 """Install Python scripts from src/ to a bin directory."""
 
 import argparse
-import os
 import shutil
 import subprocess
 import sys
@@ -12,7 +11,7 @@ from pathlib import Path
 
 def check_shebang(file_path):
     """Check if the file has the correct shebang."""
-    with open(file_path, "r") as f:
+    with open(file_path) as f:
         first_line = f.readline().strip()
     return first_line == "#!/usr/bin/env python3"
 

@@ -7,16 +7,29 @@ output options. Similar to 'du' but with enhanced tree visualization and
 filtering capabilities. Hidden files and directories are excluded by default.
 """
 
-import os
-import sys
 import argparse
 import fnmatch
+import logging
+import os
+import sys
 from dataclasses import dataclass
 
 
 @dataclass(frozen=True)
 class TreeNode:
-    """Represents a file or directory node in the disk usage tree."""
+    """Represents a file or directory node in the disk usage tree.
+
+    Attributes:
+        name (str):
+            The name of the file or directory.
+        size (int):
+            The total size in bytes (for directories, includes all contents).
+        mtime (float):
+            The modification time as a Unix timestamp.
+        children (list[TreeNode] | None):
+            List of child nodes (None for files).
+
+    """
 
     name: str
     size: int
@@ -24,7 +37,31 @@ class TreeNode:
     children: list["TreeNode"] | None = None
 
 
-def human_size_parts(size: int | float) -> tuple[str, str]:
+class ColorFormatter(logging.Formatter):
+    """
+    Custom logging formatter that adds ANSI color codes to log messages.
+
+    This formatter applies color coding based on log levels for better
+    readability in terminal output.
+    """
+
+    COLORS = {
+        logging.INFO: "\033[32m",  # Green
+        logging.WARNING: "\033[33m",  # Yellow
+        logging.ERROR: "\033[31m",  # Red
+        logging.CRITICAL: "\033[41m",  # Red background
+    }
+    RESET = "\033[0m"
+
+    def format(self, record):
+        color = self.COLORS.get(record.levelno, "")
+        message = super().format(record)
+        if color:
+            message = f"{color}{message}{self.RESET}"
+        return message
+
+
+def human_size_parts(size: float) -> tuple[str, str]:
     """
     Convert a size in bytes to human-readable format with appropriate unit.
 
@@ -42,6 +79,7 @@ def human_size_parts(size: int | float) -> tuple[str, str]:
         ('1.00', 'KB')
         >>> human_size_parts(1536)
         ('1.50', 'KB')
+
     """
     units = ["B", "KB", "MB", "GB", "TB"]
     i = 0
@@ -76,6 +114,7 @@ def parse_size(size_str: str) -> int:
         1610612736
         >>> parse_size('1024')
         1024
+
     """
     if not size_str:
         return 0
@@ -133,6 +172,7 @@ def color_size(size: int, human: bool, use_color: bool) -> str:
     Note:
         Color scheme: - B: gray - KB: green - MB: yellow - GB: red - TB: magenta
         - bytes (no unit): cyan
+
     """
     if not human:
         s = str(size)
@@ -168,6 +208,7 @@ def colored(text: str, color_code: str) -> str:
 
     Note:
         Always resets color to default at the end
+
     """
     return f"\033[{color_code}m{text}\033[0m"
 
@@ -194,6 +235,7 @@ def size_bar(
     Returns:
         str:
             String containing the visual size bar and optional percentage
+
     """
     if max_size > 0:
         # Calculate filled portion
@@ -252,6 +294,7 @@ def build_tree(
         Directories are filtered based on their total size (including contents).
         Files are filtered based on their individual size. Symlinks are counted
         by their link size, not target size.
+
     """
     if excludes is None:
         excludes = []
@@ -309,7 +352,7 @@ def build_tree(
                     sub_node = build_tree(
                         path=entry.path,
                         excludes=excludes,
-                        includes=None,  # Don't apply include filters to subdirectories
+                        includes=None,
                         show_all=show_all,
                         min_size=min_size,
                         max_size=max_size,
@@ -322,9 +365,9 @@ def build_tree(
                         children.append(sub_node)
 
     except PermissionError:
-        print(f"Permission denied: {path}", file=sys.stderr)
+        logging.exception(f"Permission denied: {path}")
     except OSError as e:
-        print(f"Error accessing {path}: {e}", file=sys.stderr)
+        logging.exception(f"Error accessing {path}: {e}")
 
     # Get stats for the current path
     try:
@@ -391,6 +434,7 @@ def print_tree(
             Total size of parent directory (for percentage calculation)
         is_last (bool):
             Whether this is the last item in its parent's list
+
     """
     if max_depth is not None and depth > max_depth:
         return
@@ -564,6 +608,10 @@ def main() -> None:
 
     args = parser.parse_args()
 
+    handler = logging.StreamHandler()
+    handler.setFormatter(ColorFormatter("%(levelname)s: %(message)s"))
+    logging.basicConfig(level=logging.INFO, handlers=[handler])
+
     # Determine if colors should be used
     use_color = args.color == "always" or (args.color == "auto" and sys.stdout.isatty())
 
@@ -576,7 +624,7 @@ def main() -> None:
         if args.max_size:
             max_size = parse_size(args.max_size)
     except ValueError as e:
-        print(f"Error: {e}", file=sys.stderr)
+        logging.exception(f"Error: {e}")
         sys.exit(1)
 
     # Get absolute path and scan directory

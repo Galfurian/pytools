@@ -1,6 +1,11 @@
 #!/usr/bin/env python3
 
-"""Check git repositories for uncommitted changes and unpushed branches."""
+"""
+Check git repositories for uncommitted changes and unpushed branches.
+
+This script scans a directory tree for Git repositories and reports any
+uncommitted changes or unpushed branches, helping maintain repository stability.
+"""
 
 import argparse
 import logging
@@ -9,6 +14,13 @@ import subprocess
 
 
 class ColorFormatter(logging.Formatter):
+    """
+    Custom logging formatter that adds ANSI color codes to log messages.
+
+    This formatter applies color coding based on log levels for better
+    readability in terminal output.
+    """
+
     COLORS = {
         logging.INFO: "\033[32m",  # Green
         logging.WARNING: "\033[33m",  # Yellow
@@ -26,18 +38,54 @@ class ColorFormatter(logging.Formatter):
 
 
 def is_git_repo(path):
+    """
+    Check if the given path is a Git repository.
+
+    Args:
+        path (str):
+            Path to check for .git directory.
+
+    Returns:
+        bool:
+            True if the path contains a .git directory, False otherwise.
+
+    """
     return os.path.isdir(os.path.join(path, ".git"))
 
 
 def get_uncommitted_changes(repo_path):
+    """
+    Get uncommitted changes in the Git repository.
+
+    Args:
+        repo_path (str):
+            Path to the Git repository.
+
+    Returns:
+        str or None:
+            String of uncommitted changes if any, None otherwise.
+
+    """
     result = subprocess.run(
-        ["git", "status", "--porcelain"], cwd=repo_path, capture_output=True, text=True
+        ["git", "status", "--porcelain"], check=False, cwd=repo_path, capture_output=True, text=True
     )
     changes = result.stdout.strip()
     return changes if changes else None
 
 
 def get_unpushed_branches(repo_path):
+    """
+    Get branches with unpushed commits or no upstream set.
+
+    Args:
+        repo_path (str):
+            Path to the Git repository.
+
+    Returns:
+        list[str] or None:
+            List of unpushed branches if any, None otherwise.
+
+    """
     # Get branches and their upstreams
     result = subprocess.run(
         [
@@ -46,7 +94,7 @@ def get_unpushed_branches(repo_path):
             "--format=%(refname:short) %(upstream:short)",
             "refs/heads",
         ],
-        cwd=repo_path,
+        check=False, cwd=repo_path,
         capture_output=True,
         text=True,
     )
@@ -61,7 +109,7 @@ def get_unpushed_branches(repo_path):
                 # Check if branch is ahead of upstream
                 ahead_result = subprocess.run(
                     ["git", "rev-list", "--count", f"{upstream}..{branch}"],
-                    cwd=repo_path,
+                    check=False, cwd=repo_path,
                     capture_output=True,
                     text=True,
                 )
@@ -77,6 +125,18 @@ def get_unpushed_branches(repo_path):
 
 
 def scan_repos(root_path):
+    """
+    Scan the directory tree for unstable Git repositories.
+
+    Args:
+        root_path (str):
+            Root directory to scan.
+
+    Returns:
+        list[dict]:
+            List of dictionaries with repository info for unstable repos.
+
+    """
     unstable_repos = []
     for dirpath, dirnames, _ in os.walk(root_path):
         if is_git_repo(dirpath):
@@ -92,6 +152,12 @@ def scan_repos(root_path):
 
 
 def main():
+    """
+    Main entry point for the repository checker script.
+
+    Parses command-line arguments, scans repositories, and reports unstable ones
+    with colored logging output.
+    """
     parser = argparse.ArgumentParser(
         description="Check git repositories for uncommitted changes and unpushed branches."
     )

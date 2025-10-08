@@ -1,15 +1,27 @@
 #!/usr/bin/env python3
 
-"""Compress a file or folder into a .tar.gz or .zip archive."""
+"""
+Compress a file or folder into a .tar.gz or .zip archive.
+
+This script provides a command-line tool to compress files or directories into
+.tar.gz or .zip archives with optional output paths and format selection.
+"""
 
 import argparse
+import logging
 import tarfile
 import zipfile
-import logging
 from pathlib import Path
 
 
 class ColorFormatter(logging.Formatter):
+    """
+    Custom logging formatter that adds ANSI color codes to log messages.
+
+    This formatter applies color coding based on log levels for better
+    readability in terminal output.
+    """
+
     COLORS = {
         logging.INFO: "\033[32m",  # Green
         logging.WARNING: "\033[33m",  # Yellow
@@ -27,7 +39,20 @@ class ColorFormatter(logging.Formatter):
 
 
 def compress_to_tar_gz(input_path: Path, output_path: Path):
-    """Compress the input file or folder to a .tar.gz archive."""
+    """
+    Compress the input file or folder to a .tar.gz archive.
+
+    Args:
+        input_path (Path):
+            Path to the file or directory to compress.
+        output_path (Path):
+            Path for the output .tar.gz archive.
+
+    Raises:
+        ValueError:
+            If input_path is neither a file nor a directory.
+
+    """
     with tarfile.open(output_path, "w:gz") as tar:
         if input_path.is_file():
             tar.add(str(input_path), arcname=input_path.name)
@@ -46,7 +71,20 @@ def compress_to_tar_gz(input_path: Path, output_path: Path):
 
 
 def compress_to_zip(input_path: Path, output_path: Path):
-    """Compress the input file or folder to a .zip archive."""
+    """
+    Compress the input file or folder to a .zip archive.
+
+    Args:
+        input_path (Path):
+            Path to the file or directory to compress.
+        output_path (Path):
+            Path for the output .zip archive.
+
+    Raises:
+        ValueError:
+            If input_path is neither a file nor a directory.
+
+    """
     with zipfile.ZipFile(output_path, "w", zipfile.ZIP_DEFLATED) as zipf:
         if input_path.is_file():
             zipf.write(str(input_path), input_path.name)
@@ -65,6 +103,12 @@ def compress_to_zip(input_path: Path, output_path: Path):
 
 
 def main():
+    """
+    Main entry point for the compression script.
+
+    Parses command-line arguments, validates inputs, and performs the compression
+    operation with appropriate logging and error handling.
+    """
     parser = argparse.ArgumentParser(
         description="Compress a file or folder into a .tar.gz or .zip archive."
     )
@@ -122,10 +166,10 @@ def main():
             compress_to_zip(input_path, output_path)
         logging.info(f"Successfully created {output_path}")
     except PermissionError:
-        logging.error(f"Permission denied when writing to '{output_path}'.")
+        logging.exception(f"Permission denied when writing to '{output_path}'.")
         exit(2)
     except Exception as e:
-        logging.error(f"Error during compression: {e}")
+        logging.exception(f"Error during compression: {e}")
         exit(3)
 
 
