@@ -15,7 +15,7 @@ import logging
 import os
 import sys
 import time
-from dataclasses import dataclass, asdict
+from dataclasses import dataclass, asdict, field
 from typing import Callable
 
 logger = logging.getLogger(__name__)
@@ -57,7 +57,7 @@ class ColorFormatter(logging.Formatter):
         return message
 
 
-@dataclass(frozen=True)
+@dataclass
 class TreeNode:
     """Represents a file or directory node in the disk usage tree.
 
@@ -70,13 +70,22 @@ class TreeNode:
             The modification time as a Unix timestamp.
         children (list[TreeNode] | None):
             List of child nodes (None for files).
+        parent (TreeNode | None):
+            Parent node (None for root).
 
     """
 
     name: str
     size: int
     mtime: float
-    children: list["TreeNode"] | None = None
+    children: list["TreeNode"] = field(default_factory=list)
+    parent: "TreeNode | None" = None
+
+    def get_path(self) -> str:
+        """Get the full path from root to this node."""
+        if self.parent is None:
+            return self.name
+        return os.path.join(self.parent.get_path(), self.name)
 
 
 def human_size_parts(size: float) -> tuple[str, str]:
@@ -341,6 +350,7 @@ def build_tree(
     max_size: int | None = None,
     older_than: float | None = None,
     progress_callback: Callable[[], None] | None = None,
+    parent: TreeNode | None = None,
 ) -> TreeNode:
     """
     Recursively build a tree structure representing directory contents with filtering options.
@@ -378,10 +388,17 @@ def build_tree(
         excludes = []
     if includes is None:
         includes = []
-    total_size = 0
-    children: list[TreeNode] = []
     current_time = time.time()
     age_threshold = current_time - (older_than or 0)
+
+    # Create the TreeNode first so we can pass it as parent to recursive calls
+    node = TreeNode(
+        name=os.path.basename(path) or "/",
+        size=0,
+        mtime=0.0,
+        children=[],
+        parent=parent,
+    )
 
     try:
         with os.scandir(path) as it:
@@ -405,7 +422,7 @@ def build_tree(
 
                 if entry.is_symlink():
                     # Count symlink size but don't traverse
-                    total_size += lstat.st_size
+                    node.size += lstat.st_size
                     continue
 
                 if entry.is_file():
@@ -414,7 +431,7 @@ def build_tree(
                     # Check age filter
                     if older_than and file_mtime > age_threshold:
                         continue
-                    total_size += file_size
+                    node.size += file_size
                     if progress_callback:
                         progress_callback()
                     # Filter files by size if specified and show_all is enabled
@@ -423,12 +440,13 @@ def build_tree(
                         and (min_size is None or file_size >= min_size)
                         and (max_size is None or file_size <= max_size)
                     ):
-                        children.append(
+                        node.children.append(
                             TreeNode(
                                 name=entry.name,
                                 size=file_size,
                                 mtime=file_mtime,
-                                children=None,
+                                children=[],
+                                parent=node,
                             )
                         )
 
@@ -449,34 +467,28 @@ def build_tree(
                         max_size=max_size,
                         older_than=older_than,
                         progress_callback=progress_callback,
+                        parent=node,  # Pass current node as parent
                     )
-                    total_size += sub_node.size
+                    node.size += sub_node.size
                     # Filter directories by total size if specified
                     if (min_size is None or sub_node.size >= min_size) and (
                         max_size is None or sub_node.size <= max_size
                     ):
-                        children.append(sub_node)
+                        node.children.append(sub_node)
 
     except PermissionError:
         logger.exception(f"Permission denied: {path}")
     except OSError:
         logger.exception(f"Error accessing {path}")
 
-    # Get stats for the current path
+    # Update node with final mtime
     try:
         path_stat = os.stat(path, follow_symlinks=False)
-        path_mtime = path_stat.st_mtime
-        # For files, total_size is already the file size
-        # For directories, total_size includes all children
+        node.mtime = path_stat.st_mtime
     except OSError:
-        path_mtime = 0.0
+        node.mtime = 0.0
 
-    return TreeNode(
-        name=os.path.basename(path) or "/",
-        size=total_size,
-        mtime=path_mtime,
-        children=children if children else None,
-    )
+    return node
 
 
 def sort_key_size(node: TreeNode) -> int:
@@ -592,10 +604,7 @@ def collect_all_nodes(node: TreeNode, include_files: bool = True) -> list[TreeNo
     """
     nodes = []
 
-    def traverse(current_node: TreeNode, path: str = ""):
-        current_path = (
-            os.path.join(path, current_node.name) if path else current_node.name
-        )
+    def traverse(current_node: TreeNode):
         if current_node.children is None:
             if include_files:
                 nodes.append(current_node)
@@ -603,7 +612,7 @@ def collect_all_nodes(node: TreeNode, include_files: bool = True) -> list[TreeNo
             nodes.append(current_node)
             if current_node.children:
                 for child in current_node.children:
-                    traverse(child, current_path)
+                    traverse(child)
 
     traverse(node)
     return nodes
@@ -947,7 +956,7 @@ def main() -> None:
 
     # Get absolute path and scan directory
     abs_path = os.path.abspath(args.path)
-    
+
     # Validate that the path exists
     if not os.path.exists(abs_path):
         logger.error(f"The path '{abs_path}' does not exist.")
@@ -1008,7 +1017,7 @@ def main() -> None:
         for i, node in enumerate(sorted_nodes, 1):
             s = color_size(node.size, args.human_readable, use_color)
             item_type = "file" if node.children is None else "dir"
-            print(f"{i}. {node.name} ({item_type}): {s}")
+            print(f"{i}. {node.get_path()} ({item_type}): {s}")
     elif args.json:
         # Export as JSON
         print(export_to_json(root_node))
