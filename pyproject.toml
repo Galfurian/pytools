@@ -37,6 +37,7 @@ ignore = [
     "DJ",  # django
     "EXE", # flake8-executable
     "T10", # debugger
+    "T20", # print statements (acceptable for CLI output)
     "TID", # flake8-tidy-imports
 
     "D203", # incorrect-blank-line-before-class
@@ -63,6 +64,7 @@ ignore = [
 
     # Style preferences
     "FBT",     # Boolean positional arg issues
+    "PLR0912", # Too many branches (acceptable for complex filtering functions)
     "PLR0913", # Too many arguments
     "PLR0915", # Too many statements
     "SIM102",  # Nested if

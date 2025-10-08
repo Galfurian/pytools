@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-pydu - Improved Disk Usage Analyzer
+pydu - Improved Disk Usage Analyzer.
 
 A tree-based disk usage analyzer with coloring, size filtering, and various
 output options. Similar to 'du' but with enhanced tree visualization and
@@ -13,6 +13,44 @@ import logging
 import os
 import sys
 from dataclasses import dataclass
+
+logger = logging.getLogger(__name__)
+
+
+class ColorFormatter(logging.Formatter):
+    """
+    Custom logging formatter that adds ANSI color codes to log messages.
+
+    This formatter applies color coding based on log levels for better
+    readability in terminal output.
+    """
+
+    COLORS = {
+        logging.INFO: "\033[32m",  # Green
+        logging.WARNING: "\033[33m",  # Yellow
+        logging.ERROR: "\033[31m",  # Red
+        logging.CRITICAL: "\033[41m",  # Red background
+    }
+    RESET = "\033[0m"
+
+    def format(self, record: logging.LogRecord) -> str:
+        """
+        Format the log record with colors.
+
+        Args:
+            record (logging.LogRecord):
+                The log record to format.
+
+        Returns:
+            str:
+                The formatted log message with ANSI color codes.
+
+        """
+        color = self.COLORS.get(record.levelno, "")
+        message = super().format(record)
+        if color:
+            message = f"{color}{message}{self.RESET}"
+        return message
 
 
 @dataclass(frozen=True)
@@ -35,30 +73,6 @@ class TreeNode:
     size: int
     mtime: float
     children: list["TreeNode"] | None = None
-
-
-class ColorFormatter(logging.Formatter):
-    """
-    Custom logging formatter that adds ANSI color codes to log messages.
-
-    This formatter applies color coding based on log levels for better
-    readability in terminal output.
-    """
-
-    COLORS = {
-        logging.INFO: "\033[32m",  # Green
-        logging.WARNING: "\033[33m",  # Yellow
-        logging.ERROR: "\033[31m",  # Red
-        logging.CRITICAL: "\033[41m",  # Red background
-    }
-    RESET = "\033[0m"
-
-    def format(self, record):
-        color = self.COLORS.get(record.levelno, "")
-        message = super().format(record)
-        if color:
-            message = f"{color}{message}{self.RESET}"
-        return message
 
 
 def human_size_parts(size: float) -> tuple[str, str]:
@@ -365,9 +379,9 @@ def build_tree(
                         children.append(sub_node)
 
     except PermissionError:
-        logging.exception(f"Permission denied: {path}")
-    except OSError as e:
-        logging.exception(f"Error accessing {path}: {e}")
+        logger.exception(f"Permission denied: {path}")
+    except OSError:
+        logger.exception(f"Error accessing {path}")
 
     # Get stats for the current path
     try:
@@ -384,6 +398,21 @@ def build_tree(
         mtime=path_mtime,
         children=children if children else None,
     )
+
+
+def sort_key_size(node: TreeNode) -> int:
+    """Sort key function for sorting by size."""
+    return node.size
+
+
+def sort_key_mtime(node: TreeNode) -> float:
+    """Sort key function for sorting by modification time."""
+    return node.mtime
+
+
+def sort_key_name(node: TreeNode) -> str:
+    """Sort key function for sorting by name."""
+    return node.name
 
 
 def print_tree(
@@ -475,12 +504,11 @@ def print_tree(
     # Sort children based on criteria
     if children:
         if sort_by == "size":
-            key_func = lambda node: node.size
+            children.sort(key=sort_key_size, reverse=reverse)
         elif sort_by == "mtime":
-            key_func = lambda node: node.mtime
+            children.sort(key=sort_key_mtime, reverse=reverse)
         else:  # name
-            key_func = lambda node: node.name
-        children.sort(key=key_func, reverse=reverse)
+            children.sort(key=sort_key_name, reverse=reverse)
 
     # Calculate max size for this level (for size bars)
     level_max_size = (
@@ -610,7 +638,8 @@ def main() -> None:
 
     handler = logging.StreamHandler()
     handler.setFormatter(ColorFormatter("%(levelname)s: %(message)s"))
-    logging.basicConfig(level=logging.INFO, handlers=[handler])
+    logger.addHandler(handler)
+    logger.setLevel(logging.INFO)
 
     # Determine if colors should be used
     use_color = args.color == "always" or (args.color == "auto" and sys.stdout.isatty())
@@ -623,8 +652,8 @@ def main() -> None:
             min_size = parse_size(args.min_size)
         if args.max_size:
             max_size = parse_size(args.max_size)
-    except ValueError as e:
-        logging.exception(f"Error: {e}")
+    except ValueError:
+        logger.exception("Error parsing size arguments")
         sys.exit(1)
 
     # Get absolute path and scan directory
