@@ -11,6 +11,7 @@ import argparse
 import logging
 import os
 import subprocess
+import time
 
 logger = logging.getLogger(__name__)
 
@@ -125,7 +126,7 @@ def get_unpushed_branches(repo_path):
             branch = parts[0]
             upstream = parts[1] if len(parts) > 1 and parts[1].strip() else None
             if upstream:
-                # Check if branch is ahead of upstream
+                # Check ahead and behind counts
                 ahead_result = subprocess.run(
                     ["git", "rev-list", "--count", f"{upstream}..{branch}"],
                     check=False,
@@ -133,20 +134,129 @@ def get_unpushed_branches(repo_path):
                     capture_output=True,
                     text=True,
                 )
-                if (
-                    ahead_result.returncode == 0
-                    and int(ahead_result.stdout.strip() or "0") > 0
-                ):
-                    unpushed.append(f"{branch} (ahead of {upstream})")
+                behind_result = subprocess.run(
+                    ["git", "rev-list", "--count", f"{branch}..{upstream}"],
+                    check=False,
+                    cwd=repo_path,
+                    capture_output=True,
+                    text=True,
+                )
+                ahead_count = (
+                    int(ahead_result.stdout.strip() or "0")
+                    if ahead_result.returncode == 0
+                    else 0
+                )
+                behind_count = (
+                    int(behind_result.stdout.strip() or "0")
+                    if behind_result.returncode == 0
+                    else 0
+                )
+
+                if ahead_count > 0 or behind_count > 0:
+                    status_parts = []
+                    if ahead_count > 0:
+                        status_parts.append(f"ahead {ahead_count}")
+                    if behind_count > 0:
+                        status_parts.append(f"behind {behind_count}")
+                    unpushed.append(f"{branch} ({', '.join(status_parts)})")
             else:
                 # No upstream set
                 unpushed.append(f"{branch} (no upstream)")
     return unpushed if unpushed else None
 
 
+def get_untracked_files(repo_path):
+    """
+    Get untracked files in the Git repository.
+
+    Args:
+        repo_path (str):
+            Path to the Git repository.
+
+    Returns:
+        list[str] or None:
+            List of untracked files if any, None otherwise.
+
+    """
+    result = subprocess.run(
+        ["git", "ls-files", "--others", "--exclude-standard"],
+        check=False,
+        cwd=repo_path,
+        capture_output=True,
+        text=True,
+    )
+    untracked = result.stdout.strip().split("\n") if result.stdout.strip() else []
+    return untracked if untracked else None
+
+
+def get_special_git_states(repo_path):
+    """
+    Check for special Git states like detached HEAD or rebase in progress.
+
+    Args:
+        repo_path (str):
+            Path to the Git repository.
+
+    Returns:
+        list[str] or None:
+            List of special states if any, None otherwise.
+
+    """
+    states = []
+
+    # Check for detached HEAD
+    head_file = os.path.join(repo_path, ".git", "HEAD")
+    if os.path.exists(head_file):
+        with open(head_file, "r") as f:
+            head_content = f.read().strip()
+            if not head_content.startswith("ref: refs/heads/"):
+                states.append("detached HEAD")
+
+    # Check for rebase in progress
+    rebase_merge = os.path.join(repo_path, ".git", "rebase-merge")
+    rebase_apply = os.path.join(repo_path, ".git", "rebase-apply")
+    if os.path.exists(rebase_merge):
+        states.append("rebase in progress")
+    elif os.path.exists(rebase_apply):
+        states.append("rebase in progress")
+
+    return states if states else None
+
+
+def get_repo_freshness(repo_path, stale_threshold_days=30):
+    """
+    Check if repository is stale (no commits in threshold days).
+
+    Args:
+        repo_path (str):
+            Path to the Git repository.
+        stale_threshold_days (int):
+            Number of days after which a repo is considered stale.
+
+    Returns:
+        int or None:
+            Days since last commit if stale, None otherwise.
+
+    """
+    result = subprocess.run(
+        ["git", "log", "-1", "--format=%ct"],
+        check=False,
+        cwd=repo_path,
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode == 0 and result.stdout.strip():
+        last_commit_time = int(result.stdout.strip())
+        current_time = int(time.time())
+        days_since_commit = (current_time - last_commit_time) // (24 * 3600)
+        if days_since_commit > stale_threshold_days:
+            return days_since_commit
+    return None
+
+
 def scan_repos(root_path):
     """
-    Scan the directory tree for unstable Git repositories.
+    Scan the directory tree for Git repositories and their status.
 
     Args:
         root_path (str):
@@ -154,21 +264,30 @@ def scan_repos(root_path):
 
     Returns:
         list[dict]:
-            List of dictionaries with repository info for unstable repos.
+            List of dictionaries with repository info for all repos.
 
     """
-    unstable_repos = []
+    repos = []
     for dirpath, dirnames, _ in os.walk(root_path):
         if is_git_repo(dirpath):
             changes = get_uncommitted_changes(dirpath)
             unpushed = get_unpushed_branches(dirpath)
-            if changes or unpushed:
-                unstable_repos.append(
-                    {"path": dirpath, "uncommitted": changes, "unpushed": unpushed}
-                )
+            untracked = get_untracked_files(dirpath)
+            special_states = get_special_git_states(dirpath)
+            stale_days = get_repo_freshness(dirpath)
+            repos.append(
+                {
+                    "path": dirpath,
+                    "uncommitted": changes,
+                    "unpushed": unpushed,
+                    "untracked": untracked,
+                    "special_states": special_states,
+                    "stale_days": stale_days,
+                }
+            )
             # Skip recursing into .git directories
             dirnames[:] = [d for d in dirnames if d != ".git"]
-    return unstable_repos
+    return repos
 
 
 def main():
@@ -184,6 +303,11 @@ def main():
     parser.add_argument(
         "root_path", type=str, help="Root path to scan for git repositories"
     )
+    parser.add_argument(
+        "--summary",
+        action="store_true",
+        help="Output summary table instead of detailed view",
+    )
     args = parser.parse_args()
 
     handler = logging.StreamHandler()
@@ -194,20 +318,65 @@ def main():
     root = args.root_path
     repos = scan_repos(root)
     if repos:
-        logger.info("Unstable repositories:")
-        for repo in repos:
-            fullpath = os.path.abspath(repo["path"])
-            logger.info(f"\n{fullpath}:")
-            if repo["uncommitted"]:
-                logger.error("  Uncommitted changes:")
-                for line in repo["uncommitted"].split("\n"):
-                    logger.error(f"    {line}")
-            if repo["unpushed"]:
-                logger.warning("  Unpushed branches:")
-                for branch in repo["unpushed"]:
-                    logger.warning(f"    {branch}")
+        if args.summary:
+            # Output summary table
+            print("PATH                 STATUS           UNPUSHED  STALE(days)")
+            print("-" * 60)
+            for repo in repos:
+                path = os.path.basename(repo["path"])[:20]  # Truncate long paths
+                is_unstable = (
+                    repo["uncommitted"]
+                    or repo["unpushed"]
+                    or repo["untracked"]
+                    or repo["special_states"]
+                )
+                status = "unstable" if is_unstable else "clean"
+                unpushed_count = len(repo["unpushed"]) if repo["unpushed"] else 0
+                stale = repo["stale_days"] if repo["stale_days"] is not None else ""
+                print(f"{path:<20} {status:<15} {unpushed_count:<8} {stale}")
+        else:
+            # Detailed output
+            logger.info("Git repositories:")
+            for repo in repos:
+                fullpath = os.path.abspath(repo["path"])
+                is_unstable = (
+                    repo["uncommitted"]
+                    or repo["unpushed"]
+                    or repo["untracked"]
+                    or repo["special_states"]
+                )
+                status_color = logging.ERROR if is_unstable else logging.INFO
+                logger.log(status_color, f"\n{fullpath}:")
+
+                if repo["stale_days"] is not None:
+                    logger.warning(
+                        f"  Stale: {repo['stale_days']} days since last commit"
+                    )
+
+                if repo["uncommitted"]:
+                    logger.error("  Uncommitted changes:")
+                    for line in repo["uncommitted"].split("\n"):
+                        logger.error(f"    {line}")
+                if repo["unpushed"]:
+                    logger.warning("  Unpushed branches:")
+                    for branch in repo["unpushed"]:
+                        logger.warning(f"    {branch}")
+                if repo["untracked"]:
+                    logger.info("  Untracked files:")
+                    for file in repo["untracked"]:
+                        logger.info(f"    {file}")
+                if repo["special_states"]:
+                    logger.warning("  Special states:")
+                    for state in repo["special_states"]:
+                        logger.warning(f"    {state}")
+
+                if not is_unstable and repo["stale_days"] is None:
+                    logger.info("  Status: clean")
     else:
-        logger.info("All repositories are stable.")
+        if args.summary:
+            print("No Git repositories found.")
+        else:
+            logger.info("No Git repositories found.")
 
 
 if __name__ == "__main__":

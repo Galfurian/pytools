@@ -8,11 +8,15 @@ filtering capabilities. Hidden files and directories are excluded by default.
 """
 
 import argparse
+import csv
 import fnmatch
+import json
 import logging
 import os
 import sys
-from dataclasses import dataclass
+import time
+from dataclasses import dataclass, asdict
+from typing import Callable
 
 logger = logging.getLogger(__name__)
 
@@ -167,6 +171,60 @@ def parse_size(size_str: str) -> int:
     )
 
 
+def parse_time_duration(duration_str: str) -> float:
+    """
+    Parse human-readable time duration into seconds.
+
+    Supports formats like '30d', '1w', '2M', '1y' for days, weeks, months, years.
+
+    Args:
+        duration_str (str):
+            Duration string to parse (e.g., '30d', '1w', '2M', '1y')
+
+    Returns:
+        float:
+            Duration in seconds
+
+    Raises:
+        ValueError: If the duration string format is invalid
+
+    Examples:
+        >>> parse_time_duration('30d')
+        2592000.0
+        >>> parse_time_duration('1w')
+        604800.0
+
+    """
+    if not duration_str:
+        return 0
+
+    duration_str = duration_str.strip().upper()
+
+    # Define time multipliers (approximate)
+    multipliers = {
+        "S": 1,  # seconds
+        "M": 30 * 24 * 3600,  # months (30 days)
+        "W": 7 * 24 * 3600,  # weeks
+        "D": 24 * 3600,  # days
+        "H": 3600,  # hours
+        "Y": 365 * 24 * 3600,  # years (365 days)
+    }
+
+    for unit, multiplier in multipliers.items():
+        if duration_str.endswith(unit):
+            try:
+                value_str = duration_str[: -len(unit)].strip()
+                value = float(value_str)
+                return value * multiplier
+            except ValueError:
+                continue
+
+    raise ValueError(
+        f"Invalid duration format: '{duration_str}'. "
+        f"Use formats like '30d', '1w', '2M', '1y', '5h', '10s'."
+    )
+
+
 def color_size(size: int, human: bool, use_color: bool) -> str:
     """
     Format a size with optional human-readable conversion and ANSI coloring.
@@ -281,6 +339,8 @@ def build_tree(
     show_all: bool = False,
     min_size: int | None = None,
     max_size: int | None = None,
+    older_than: float | None = None,
+    progress_callback: Callable[[], None] | None = None,
 ) -> TreeNode:
     """
     Recursively build a tree structure representing directory contents with filtering options.
@@ -298,6 +358,10 @@ def build_tree(
             Minimum size threshold in bytes (None for no minimum)
         max_size (int | None):
             Maximum size threshold in bytes (None for no maximum)
+        older_than (float | None):
+            Only include items older than this many seconds (None for no age filter)
+        progress_callback (Callable[[], None] | None):
+            Callback function to call for progress updates (None for no progress)
 
     Returns:
         TreeNode:
@@ -316,6 +380,8 @@ def build_tree(
         includes = []
     total_size = 0
     children: list[TreeNode] = []
+    current_time = time.time()
+    age_threshold = current_time - (older_than or 0)
 
     try:
         with os.scandir(path) as it:
@@ -345,7 +411,12 @@ def build_tree(
                 if entry.is_file():
                     file_size = lstat.st_size
                     file_mtime = lstat.st_mtime
+                    # Check age filter
+                    if older_than and file_mtime > age_threshold:
+                        continue
                     total_size += file_size
+                    if progress_callback:
+                        progress_callback()
                     # Filter files by size if specified and show_all is enabled
                     if (
                         show_all
@@ -362,6 +433,12 @@ def build_tree(
                         )
 
                 elif entry.is_dir():
+                    # Check age filter for directory
+                    dir_mtime = lstat.st_mtime
+                    if older_than and dir_mtime > age_threshold:
+                        continue
+                    if progress_callback:
+                        progress_callback()
                     # Recursively scan subdirectory
                     sub_node = build_tree(
                         path=entry.path,
@@ -370,6 +447,8 @@ def build_tree(
                         show_all=show_all,
                         min_size=min_size,
                         max_size=max_size,
+                        older_than=older_than,
+                        progress_callback=progress_callback,
                     )
                     total_size += sub_node.size
                     # Filter directories by total size if specified
@@ -413,6 +492,173 @@ def sort_key_mtime(node: TreeNode) -> float:
 def sort_key_name(node: TreeNode) -> str:
     """Sort key function for sorting by name."""
     return node.name
+
+
+def compute_depth_totals(node: TreeNode, max_depth: int) -> dict[int, int]:
+    """
+    Compute total sizes grouped by directory depth.
+
+    Args:
+        node (TreeNode): Root node to analyze
+        max_depth (int): Maximum depth to compute totals for
+
+    Returns:
+        dict[int, int]: Dictionary mapping depth to total size at that depth
+    """
+    totals = {}
+
+    def traverse(current_node: TreeNode, depth: int):
+        if depth > max_depth:
+            return
+        if depth not in totals:
+            totals[depth] = 0
+        totals[depth] += current_node.size
+
+        if current_node.children:
+            for child in current_node.children:
+                traverse(child, depth + 1)
+
+    traverse(node, 0)
+    return totals
+
+
+def compute_grouped_summary(node: TreeNode) -> dict[str, int]:
+    """
+    Compute grouped summary of files vs directories.
+
+    Args:
+        node (TreeNode): Root node to analyze
+
+    Returns:
+        dict[str, int]: Dictionary with 'files' and 'directories' size totals
+    """
+    file_size = 0
+    dir_size = 0
+
+    def traverse(current_node: TreeNode):
+        nonlocal file_size, dir_size
+        if current_node.children is None:
+            # It's a file
+            file_size += current_node.size
+        else:
+            # It's a directory
+            dir_size += current_node.size
+            if current_node.children:
+                for child in current_node.children:
+                    traverse(child)
+
+    traverse(node)
+    return {"files": file_size, "directories": dir_size}
+
+
+def compute_file_types(node: TreeNode) -> dict[str, int]:
+    """
+    Compute cumulative sizes by file extension.
+
+    Args:
+        node (TreeNode): Root node to analyze
+
+    Returns:
+        dict[str, int]: Dictionary mapping file extension to total size
+    """
+    types = {}
+
+    def traverse(current_node: TreeNode):
+        if current_node.children is None:
+            # It's a file
+            _, ext = os.path.splitext(current_node.name)
+            ext = ext.lower() if ext else "(no extension)"
+            if ext not in types:
+                types[ext] = 0
+            types[ext] += current_node.size
+        elif current_node.children:
+            for child in current_node.children:
+                traverse(child)
+
+    traverse(node)
+    return types
+
+
+def collect_all_nodes(node: TreeNode, include_files: bool = True) -> list[TreeNode]:
+    """
+    Collect all nodes in the tree for top-N analysis.
+
+    Args:
+        node (TreeNode): Root node to analyze
+        include_files (bool): Whether to include files in the collection
+
+    Returns:
+        list[TreeNode]: List of all nodes
+    """
+    nodes = []
+
+    def traverse(current_node: TreeNode, path: str = ""):
+        current_path = (
+            os.path.join(path, current_node.name) if path else current_node.name
+        )
+        if current_node.children is None:
+            if include_files:
+                nodes.append(current_node)
+        else:
+            nodes.append(current_node)
+            if current_node.children:
+                for child in current_node.children:
+                    traverse(child, current_path)
+
+    traverse(node)
+    return nodes
+
+
+def export_to_json(node: TreeNode) -> str:
+    """
+    Export tree structure to JSON.
+
+    Args:
+        node (TreeNode): Root node to export
+
+    Returns:
+        str: JSON representation of the tree
+    """
+    return json.dumps(asdict(node), indent=2)
+
+
+def export_to_csv(node: TreeNode, include_files: bool = True) -> str:
+    """
+    Export tree structure to CSV format.
+
+    Args:
+        node (TreeNode): Root node to export
+        include_files (bool): Whether to include files in export
+
+    Returns:
+        str: CSV representation of the tree data
+    """
+    import io
+
+    output = io.StringIO()
+    writer = csv.writer(output)
+    writer.writerow(["path", "size", "mtime", "type"])
+
+    def traverse(current_node: TreeNode, path: str = ""):
+        current_path = (
+            os.path.join(path, current_node.name) if path else current_node.name
+        )
+        node_type = "file" if current_node.children is None else "directory"
+        if current_node.children is None:
+            if include_files:
+                writer.writerow(
+                    [current_path, current_node.size, current_node.mtime, node_type]
+                )
+        else:
+            writer.writerow(
+                [current_path, current_node.size, current_node.mtime, node_type]
+            )
+            if current_node.children:
+                for child in current_node.children:
+                    traverse(child, current_path)
+
+    traverse(node)
+    return output.getvalue()
 
 
 def print_tree(
@@ -633,6 +879,46 @@ def main() -> None:
         default="auto",
         help="Use colors in output (default: auto)",
     )
+    parser.add_argument(
+        "-t",
+        "--depth-totals",
+        type=int,
+        default=None,
+        help="Show size totals grouped by directory level up to specified depth",
+    )
+    parser.add_argument(
+        "-g",
+        "--grouped",
+        action="store_true",
+        help="Show grouped summary (files vs directories)",
+    )
+    parser.add_argument(
+        "--by-type",
+        action="store_true",
+        help="Show cumulative size by file extension",
+    )
+    parser.add_argument(
+        "--top",
+        type=int,
+        default=None,
+        help="Show top N largest items (files and directories)",
+    )
+    parser.add_argument(
+        "--json",
+        action="store_true",
+        help="Export results as JSON",
+    )
+    parser.add_argument(
+        "--csv",
+        action="store_true",
+        help="Export results as CSV",
+    )
+    parser.add_argument(
+        "--older-than",
+        type=str,
+        default=None,
+        help="Only show items older than specified duration (e.g., '30d', '1w', '2M')",
+    )
 
     args = parser.parse_args()
 
@@ -647,17 +933,29 @@ def main() -> None:
     # Parse size filters with error handling
     min_size: int | None = None
     max_size: int | None = None
+    older_than: float | None = None
     try:
         if args.min_size:
             min_size = parse_size(args.min_size)
         if args.max_size:
             max_size = parse_size(args.max_size)
+        if args.older_than:
+            older_than = parse_time_duration(args.older_than)
     except ValueError:
-        logger.exception("Error parsing size arguments")
+        logger.exception("Error parsing size or time arguments")
         sys.exit(1)
 
     # Get absolute path and scan directory
     abs_path = os.path.abspath(args.path)
+
+    # Set up progress tracking
+    scanned_count = 0
+
+    def progress_callback():
+        nonlocal scanned_count
+        scanned_count += 1
+        print(f"\rScanned {scanned_count} items...", end="", file=sys.stderr)
+
     root_node = build_tree(
         abs_path,
         args.exclude,
@@ -665,12 +963,53 @@ def main() -> None:
         args.all,
         min_size,
         max_size,
+        older_than,
+        progress_callback,
     )
+
+    # Clear progress line
+    print(file=sys.stderr)
 
     # Output results
     if args.summarize:
         s = color_size(root_node.size, args.human_readable, use_color)
         print(f"{s} {args.path}")
+    elif args.depth_totals is not None:
+        # Show depth totals
+        totals = compute_depth_totals(root_node, args.depth_totals)
+        for depth in sorted(totals.keys()):
+            s = color_size(totals[depth], args.human_readable, use_color)
+            indent = "  " * depth
+            print(f"{indent}Depth {depth}: {s}")
+    elif args.grouped:
+        # Show grouped summary
+        summary = compute_grouped_summary(root_node)
+        files_s = color_size(summary["files"], args.human_readable, use_color)
+        dirs_s = color_size(summary["directories"], args.human_readable, use_color)
+        print(f"Files: {files_s}")
+        print(f"Directories: {dirs_s}")
+        total_s = color_size(root_node.size, args.human_readable, use_color)
+        print(f"Total: {total_s}")
+    elif args.by_type:
+        # Show file type aggregation
+        types = compute_file_types(root_node)
+        for ext, size in sorted(types.items(), key=lambda x: x[1], reverse=True):
+            s = color_size(size, args.human_readable, use_color)
+            print(f"{ext}: {s}")
+    elif args.top is not None:
+        # Show top N largest items
+        all_nodes = collect_all_nodes(root_node, include_files=args.all)
+        sorted_nodes = sorted(all_nodes, key=lambda n: n.size, reverse=True)[: args.top]
+        for i, node in enumerate(sorted_nodes, 1):
+            s = color_size(node.size, args.human_readable, use_color)
+            item_type = "file" if node.children is None else "dir"
+            print(f"{i}. {node.name} ({item_type}): {s}")
+    elif args.json:
+        # Export as JSON
+        print(export_to_json(root_node))
+    elif args.csv:
+        # Export as CSV
+        print(export_to_csv(root_node, include_files=args.all))
     else:
         root_max_size = (
             max((node.size for node in root_node.children), default=root_node.size)
