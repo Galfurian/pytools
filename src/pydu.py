@@ -798,10 +798,13 @@ def main() -> None:
     parser = argparse.ArgumentParser(
         description="Improved disk usage analyzer with tree-like output and coloring.",
         conflict_handler="resolve",
-        add_help=False,  # Disable automatic -h for help so we can use -h for human-readable
+        add_help=False,
     )
     parser.add_argument(
-        "-h", "--help", action="help", help="Show this help message and exit"
+        "-h",
+        "--help",
+        action="help",
+        help="Show this help message and exit",
     )
     parser.add_argument(
         "path",
@@ -839,21 +842,24 @@ def main() -> None:
         help="Sort output by name, size, or modification time (default: name)",
     )
     parser.add_argument(
-        "-r", "--reverse", action="store_true", help="Reverse the sort order"
+        "-r",
+        "--reverse",
+        action="store_true",
+        help="Reverse the sort order",
     )
     parser.add_argument(
         "-x",
         "--exclude",
         action="append",
         default=[],
-        help="Exclude files/directories matching the pattern (can be used multiple times)",
+        help="Exclude files/directories matching the pattern (can be used multiple times or comma-separated)",
     )
     parser.add_argument(
         "-i",
         "--include",
         action="append",
         default=[],
-        help="Include only files/directories matching the pattern (can be used multiple times)",
+        help="Include only files/directories matching the pattern (can be used multiple times or comma-separated)",
     )
     parser.add_argument(
         "-m",
@@ -924,6 +930,21 @@ def main() -> None:
     )
 
     args = parser.parse_args()
+
+    # Process comma-separated exclude and include patterns
+    processed_excludes = []
+    for exclude in args.exclude:
+        processed_excludes.extend(exclude.split(","))
+    args.exclude = [
+        pattern.strip() for pattern in processed_excludes if pattern.strip()
+    ]
+
+    processed_includes = []
+    for include in args.include:
+        processed_includes.extend(include.split(","))
+    args.include = [
+        pattern.strip() for pattern in processed_includes if pattern.strip()
+    ]
 
     handler = logging.StreamHandler()
     handler.setFormatter(ColorFormatter("%(levelname)s: %(message)s"))
