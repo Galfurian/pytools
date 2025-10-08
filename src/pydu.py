@@ -671,9 +671,7 @@ def export_to_csv(node: TreeNode, include_files: bool = True) -> str:
 
 
 def print_tree(
-    name: str,
-    size: int,
-    children: list[TreeNode] | None,
+    node: TreeNode,
     prefix: str = "",
     depth: int = 0,
     max_depth: int | None = None,
@@ -690,12 +688,8 @@ def print_tree(
     Recursively print a directory tree with size information.
 
     Args:
-        name (str):
-            Name of the current item (file or directory)
-        size (int):
-            Size of the current item in bytes
-        children (list[TreeNode] | None):
-            List of child TreeNode objects (None for files)
+        node (TreeNode):
+            TreeNode to print
         prefix (str):
             Current tree prefix string for indentation
         depth (int):
@@ -723,18 +717,23 @@ def print_tree(
     if max_depth is not None and depth > max_depth:
         return
 
-    # Create tree branch symbol
-    line_prefix = prefix + ("└── " if is_last else "├── ")
+    # Create tree branch symbol (only for non-root nodes), and also update prefix.
+    if depth == 0:
+        new_prefix = ""
+        line_prefix = ""
+    else:
+        new_prefix = prefix + ("   " if is_last else "│  ")
+        line_prefix = prefix + ("└─ " if is_last else "├─ ")
 
     # Format size with optional coloring
-    s = color_size(size, human, color)
+    s = color_size(node.size, human, color)
 
     # Add size bar if enabled
     bar_str = ""
     if size_bars and max_size_in_level > 0:
         pct_size = parent_total_size if parent_total_size > 0 else max_size_in_level
         bar = size_bar(
-            size=size,
+            size=node.size,
             max_size=pct_size,
             width=10,
             use_color=color,
@@ -742,44 +741,39 @@ def print_tree(
         bar_str = f"{bar} "
 
     # Print current item
-    if children is None:
+    if node.children is None:
         # File
-        print(f"{bar_str}{line_prefix}{name} {s}")
+        print(f"{bar_str}{line_prefix}{node.name} {s}")
     else:
         # Directory
-        print(f"{bar_str}{line_prefix}{name}/ {s}")
+        print(f"{bar_str}{line_prefix}{node.name}/ {s}")
 
     # Stop recursion if no children or max depth reached
-    if children is None or (max_depth is not None and depth >= max_depth):
+    if node.children is None or (max_depth is not None and depth >= max_depth):
         return
 
-    # Prepare prefix for child items
-    new_prefix = prefix + ("    " if is_last else "│   ")
-
     # Sort children based on criteria
-    if children:
+    if node.children:
         if sort_by == "size":
-            children.sort(key=sort_key_size, reverse=reverse)
+            node.children.sort(key=sort_key_size, reverse=reverse)
         elif sort_by == "mtime":
-            children.sort(key=sort_key_mtime, reverse=reverse)
+            node.children.sort(key=sort_key_mtime, reverse=reverse)
         else:  # name
-            children.sort(key=sort_key_name, reverse=reverse)
+            node.children.sort(key=sort_key_name, reverse=reverse)
 
     # Calculate max size for this level (for size bars)
     level_max_size = (
-        max((node.size for node in children), default=0)
-        if size_bars and children
+        max((child.size for child in node.children), default=0)
+        if size_bars and node.children
         else 0
     )
 
     # Recursively print children
-    if children:
-        for i, node in enumerate(children):
-            sub_last = i == len(children) - 1
+    if node.children:
+        for i, child in enumerate(node.children):
+            sub_last = i == len(node.children) - 1
             print_tree(
-                name=node.name,
-                size=node.size,
-                children=node.children,
+                node=child,
                 prefix=new_prefix,
                 depth=depth + 1,
                 max_depth=max_depth,
@@ -789,7 +783,7 @@ def print_tree(
                 color=color,
                 size_bars=size_bars,
                 max_size_in_level=level_max_size,
-                parent_total_size=size,
+                parent_total_size=node.size,
                 is_last=sub_last,
             )
 
@@ -1031,9 +1025,7 @@ def main() -> None:
             else root_node.size
         )
         print_tree(
-            root_node.name,
-            root_node.size,
-            root_node.children,
+            node=root_node,
             depth=0,
             max_depth=args.max_depth,
             sort_by=args.sort_by,
