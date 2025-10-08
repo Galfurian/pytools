@@ -9,9 +9,12 @@ This script provides a command-line tool to compress files or directories into
 
 import argparse
 import logging
+import sys
 import tarfile
 import zipfile
 from pathlib import Path
+
+logger = logging.getLogger(__name__)
 
 
 class ColorFormatter(logging.Formatter):
@@ -30,7 +33,19 @@ class ColorFormatter(logging.Formatter):
     }
     RESET = "\033[0m"
 
-    def format(self, record):
+    def format(self, record: logging.LogRecord) -> str:
+        """
+        Format the log record with colors.
+
+        Args:
+            record (logging.LogRecord):
+                The log record to format.
+
+        Returns:
+            str:
+                The formatted log message with ANSI color codes.
+
+        """
         color = self.COLORS.get(record.levelno, "")
         message = super().format(record)
         if color:
@@ -62,9 +77,6 @@ def compress_to_tar_gz(input_path: Path, output_path: Path):
                     arcname = file.relative_to(input_path.parent)
                     tar.add(str(file), arcname=str(arcname))
         else:
-            logging.error(
-                f"Input path '{input_path}' is neither a file nor a directory."
-            )
             raise ValueError(
                 f"Input path '{input_path}' is neither a file nor a directory."
             )
@@ -94,9 +106,6 @@ def compress_to_zip(input_path: Path, output_path: Path):
                     arcname = file.relative_to(input_path.parent)
                     zipf.write(str(file), str(arcname))
         else:
-            logging.error(
-                f"Input path '{input_path}' is neither a file nor a directory."
-            )
             raise ValueError(
                 f"Input path '{input_path}' is neither a file nor a directory."
             )
@@ -132,14 +141,15 @@ def main():
 
     handler = logging.StreamHandler()
     handler.setFormatter(ColorFormatter("%(levelname)s: %(message)s"))
-    logging.basicConfig(level=logging.INFO, handlers=[handler])
+    logger.addHandler(handler)
+    logger.setLevel(logging.INFO)
 
     input_path = Path(args.input_path).resolve()
     if not input_path.exists():
-        logging.error(f"The path '{input_path}' does not exist.")
+        logger.error(f"The path '{input_path}' does not exist.")
         raise FileNotFoundError(f"The path '{input_path}' does not exist.")
     if not (input_path.is_file() or input_path.is_dir()):
-        logging.error(
+        logger.error(
             f"The path '{input_path}' is not a file or directory. Only files and folders are supported."
         )
         raise ValueError(
@@ -154,23 +164,23 @@ def main():
         output_path = input_path.parent / output_name
 
     if output_path.exists():
-        logging.warning(
+        logger.warning(
             f"Output file '{output_path}' already exists and will be overwritten."
         )
 
     try:
-        logging.info(f"Creating {output_path} from {input_path}...")
+        logger.info(f"Creating {output_path} from {input_path}...")
         if args.format == "tar.gz":
             compress_to_tar_gz(input_path, output_path)
         else:
             compress_to_zip(input_path, output_path)
-        logging.info(f"Successfully created {output_path}")
+        logger.info(f"Successfully created {output_path}")
     except PermissionError:
-        logging.exception(f"Permission denied when writing to '{output_path}'.")
-        exit(2)
-    except Exception as e:
-        logging.exception(f"Error during compression: {e}")
-        exit(3)
+        logger.exception(f"Permission denied when writing to '{output_path}'.")
+        sys.exit(2)
+    except Exception:
+        logger.exception("Error during compression")
+        sys.exit(3)
 
 
 if __name__ == "__main__":
