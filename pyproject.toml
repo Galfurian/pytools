@@ -53,7 +53,8 @@ ignore = [
     "ERA001", # Found commented-out code
     "G004",   # Logging statement uses f-string
     "TRY003", # Avoid specifying long messages outside the exception class
-    "S311",   # random usage appropriate for data generation
+    "S301",   # pickle usage (acceptable for local cache)
+    "S310",   # urllib URL scheme audit (acceptable for HTTPS URLs)
     "S603",   # subprocess call security
     "S607",   # Starting a process with a partial executable path (acceptable for CLI tools)
 
