@@ -24,6 +24,7 @@ logger = logging.getLogger(__name__)
 
 class NodeType(Enum):
     """Enumeration of filesystem node types."""
+
     FILE = "file"
     DIRECTORY = "directory"
     SYMLINK = "symlink"
@@ -284,7 +285,7 @@ def color_size(size: int, human: bool, use_color: bool) -> str:
     return colored(s, col)
 
 
-def colored(text: str, color_code: str) -> str:
+def colored(text: str, color_code: str, light: bool = False) -> str:
     """
     Apply ANSI color codes to text.
 
@@ -293,6 +294,8 @@ def colored(text: str, color_code: str) -> str:
             Text to color
         color_code (str):
             ANSI color code (e.g., "31" for red, "32" for green)
+        light (bool):
+            Whether to use light (bright) variant of the color
 
     Returns:
         str:
@@ -302,7 +305,42 @@ def colored(text: str, color_code: str) -> str:
         Always resets color to default at the end
 
     """
+    if light:
+        color_code = f"1;{color_code}"
     return f"\033[{color_code}m{text}\033[0m"
+
+
+def color_name(name: str, node_type: NodeType, use_color: bool) -> str:
+    """
+    Color a node name based on its type.
+
+    Args:
+        name (str):
+            The node name to color
+        node_type (NodeType):
+            Type of the node
+        use_color (bool):
+            Whether to apply colors
+
+    Returns:
+        str:
+            Colored name if use_color is True, otherwise plain name
+
+    Note:
+        Color scheme: directories blue, files green, symlinks cyan
+
+    """
+    if not use_color:
+        return name
+
+    type_colors = {
+        NodeType.DIRECTORY: "34",
+        NodeType.SYMLINK: "33",
+        NodeType.FILE: "37",
+    }
+
+    color_code = type_colors.get(node_type, "37")
+    return colored(name, color_code, True)
 
 
 def size_bar(
@@ -432,8 +470,20 @@ def build_tree(
                 lstat = entry.stat(follow_symlinks=False)
 
                 if entry.is_symlink():
-                    # Count symlink size but don't traverse
+                    # Count symlink size but don't traverse.
                     node.size += lstat.st_size
+                    # Filter symlinks if show_all is enabled
+                    if show_all:
+                        node.children.append(
+                            TreeNode(
+                                name=entry.name,
+                                size=lstat.st_size,
+                                mtime=lstat.st_mtime,
+                                children=[],
+                                parent=node,
+                                node_type=NodeType.SYMLINK,
+                            )
+                        )
                     continue
 
                 if entry.is_file():
@@ -753,15 +803,18 @@ def print_tree(
         bar_str = f"{bar} "
 
     # Print current item
+    colored_name = color_name(node.name, node.node_type, color)
     if node.node_type == NodeType.FILE:
-        # File
-        print(f"{bar_str}{line_prefix}{node.name} {s}")
+        print(f"{bar_str}{line_prefix}{colored_name} {s}")
+    elif node.node_type == NodeType.SYMLINK:
+        print(f"{bar_str}{line_prefix}{colored_name} {s}")
     else:
-        # Directory
-        print(f"{bar_str}{line_prefix}{node.name}/ {s}")
+        print(f"{bar_str}{line_prefix}{colored_name}/ {s}")
 
     # Stop recursion if no children or max depth reached
-    if node.node_type == NodeType.FILE or (max_depth is not None and depth >= max_depth):
+    if node.node_type == NodeType.FILE or (
+        max_depth is not None and depth >= max_depth
+    ):
         return
 
     # Sort children based on criteria
