@@ -12,6 +12,8 @@ import logging
 import os
 import subprocess
 
+logger = logging.getLogger(__name__)
+
 
 class ColorFormatter(logging.Formatter):
     """
@@ -29,7 +31,19 @@ class ColorFormatter(logging.Formatter):
     }
     RESET = "\033[0m"
 
-    def format(self, record):
+    def format(self, record: logging.LogRecord) -> str:
+        """
+        Format the log record with colors.
+
+        Args:
+            record (logging.LogRecord):
+                The log record to format.
+
+        Returns:
+            str:
+                The formatted log message with ANSI color codes.
+
+        """
         color = self.COLORS.get(record.levelno, "")
         message = super().format(record)
         if color:
@@ -67,7 +81,11 @@ def get_uncommitted_changes(repo_path):
 
     """
     result = subprocess.run(
-        ["git", "status", "--porcelain"], check=False, cwd=repo_path, capture_output=True, text=True
+        ["git", "status", "--porcelain"],
+        check=False,
+        cwd=repo_path,
+        capture_output=True,
+        text=True,
     )
     changes = result.stdout.strip()
     return changes if changes else None
@@ -94,7 +112,8 @@ def get_unpushed_branches(repo_path):
             "--format=%(refname:short) %(upstream:short)",
             "refs/heads",
         ],
-        check=False, cwd=repo_path,
+        check=False,
+        cwd=repo_path,
         capture_output=True,
         text=True,
     )
@@ -109,7 +128,8 @@ def get_unpushed_branches(repo_path):
                 # Check if branch is ahead of upstream
                 ahead_result = subprocess.run(
                     ["git", "rev-list", "--count", f"{upstream}..{branch}"],
-                    check=False, cwd=repo_path,
+                    check=False,
+                    cwd=repo_path,
                     capture_output=True,
                     text=True,
                 )
@@ -167,26 +187,27 @@ def main():
     args = parser.parse_args()
 
     handler = logging.StreamHandler()
-    handler.setFormatter(ColorFormatter("%(message)s"))
-    logging.basicConfig(level=logging.INFO, handlers=[handler])
+    handler.setFormatter(ColorFormatter("%(levelname)s: %(message)s"))
+    logger.addHandler(handler)
+    logger.setLevel(logging.INFO)
 
     root = args.root_path
     repos = scan_repos(root)
     if repos:
-        logging.info("Unstable repositories:")
+        logger.info("Unstable repositories:")
         for repo in repos:
             fullpath = os.path.abspath(repo["path"])
-            logging.info(f"\n{fullpath}:")
+            logger.info(f"\n{fullpath}:")
             if repo["uncommitted"]:
-                logging.error("  Uncommitted changes:")
+                logger.error("  Uncommitted changes:")
                 for line in repo["uncommitted"].split("\n"):
-                    logging.error(f"    {line}")
+                    logger.error(f"    {line}")
             if repo["unpushed"]:
-                logging.warning("  Unpushed branches:")
+                logger.warning("  Unpushed branches:")
                 for branch in repo["unpushed"]:
-                    logging.warning(f"    {branch}")
+                    logger.warning(f"    {branch}")
     else:
-        logging.info("All repositories are stable.")
+        logger.info("All repositories are stable.")
 
 
 if __name__ == "__main__":
