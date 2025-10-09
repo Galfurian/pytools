@@ -531,7 +531,7 @@ def node_matches(node: TreeNode, args: argparse.Namespace) -> bool:
             if fnmatch.fnmatch(name, pat):
                 return False
 
-    if args.include:
+    if args.include and node.node_type != NodeType.DIRECTORY:
         matched = False
         for pat in args.include:
             if fnmatch.fnmatch(name, pat):
@@ -544,13 +544,14 @@ def node_matches(node: TreeNode, args: argparse.Namespace) -> bool:
     if not args.show_hidden and name.startswith("."):
         return False
 
-    # Size filters
-    if getattr(args, "min_size", None) is not None:
-        if node.size < args.min_size:
-            return False
-    if getattr(args, "max_size", None) is not None:
-        if node.size > args.max_size:
-            return False
+    # Size filters (only for files and symlinks)
+    if node.node_type != NodeType.DIRECTORY:
+        if getattr(args, "min_size", None) is not None:
+            if node.size < args.min_size:
+                return False
+        if getattr(args, "max_size", None) is not None:
+            if node.size > args.max_size:
+                return False
 
     # Age filter (older-than): node.mtime is compared to current time
     if getattr(args, "older_than", None):
@@ -565,11 +566,10 @@ def filter_tree(node: TreeNode, args: argparse.Namespace) -> TreeNode | None:
     """
     Recursively filter a TreeNode tree according to args.
 
-    Returns the node if it (or any of its descendants) match the filters,
-    otherwise returns None to indicate the node should be pruned.
+    Returns the node if it matches the filters, otherwise returns None.
 
-    Directories that don't match but have matching children will be kept with
-    only the matching children.
+    For directories, children are filtered first, and the directory is kept
+    only if it has children left after filtering.
     """
     # Files and symlinks: simple match
     if node.node_type in (NodeType.FILE, NodeType.SYMLINK):
@@ -588,11 +588,11 @@ def filter_tree(node: TreeNode, args: argparse.Namespace) -> TreeNode | None:
     # removed some children). Keep original mtime/name.
     node.size = sum((c.size for c in node.children), 0)
 
-    # Keep directory if it matches itself or it has any children left
-    if node.children:
+    # Keep directory only if it matches the filters and has children left
+    if node_matches(node, args) and node.children:
         return node
 
-    return node if node_matches(node, args) else None
+    return None
 
 
 def sort_key_size(node: TreeNode) -> int:
@@ -807,7 +807,6 @@ def main() -> None:
         help="Display visual size bars showing relative sizes",
     )
     parser.add_argument(
-        "-sh",
         "--show-hidden",
         default=False,
         action="store_true",
