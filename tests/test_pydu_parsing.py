@@ -1,7 +1,7 @@
 """Tests for pydu module."""
 
 import pytest
-from src.pydu import parse_size, parse_time_duration, process_patterns
+from pydu import parse_size, parse_time_duration, process_patterns
 
 
 class TestParseSize:

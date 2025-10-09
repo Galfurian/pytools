@@ -3,7 +3,8 @@
 import argparse
 import copy
 import pytest
-from src.pydu import node_matches, filter_tree, TreeNode, NodeType
+
+from pydu import node_matches, filter_tree, TreeNode, NodeType
 
 
 @pytest.fixture

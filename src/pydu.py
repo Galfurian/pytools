@@ -621,9 +621,7 @@ def filter_tree(node: TreeNode, args: argparse.Namespace) -> TreeNode | None:
     node.size = sum((c.size for c in node.children), 0)
 
     # Keep directory only if it matches the filters and has children left (or --only-dirs)
-    if node_matches(node, args) and (
-        node.children or args.only_dirs
-    ):
+    if node_matches(node, args) and (node.children or args.only_dirs):
         return node
 
     return None
