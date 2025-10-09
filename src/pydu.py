@@ -552,6 +552,10 @@ def node_matches(node: TreeNode, args: argparse.Namespace) -> bool:
     if not args.show_hidden and name.startswith("."):
         return False
 
+    # Only directories.
+    if getattr(args, "only_dirs", False) and node.node_type != NodeType.DIRECTORY:
+        return False
+
     # Size filters (only for files and symlinks)
     if node.node_type != NodeType.DIRECTORY:
         if getattr(args, "min_size", None) is not None:
@@ -596,8 +600,8 @@ def filter_tree(node: TreeNode, args: argparse.Namespace) -> TreeNode | None:
     # removed some children). Keep original mtime/name.
     node.size = sum((c.size for c in node.children), 0)
 
-    # Keep directory only if it matches the filters and has children left
-    if node_matches(node, args) and node.children:
+    # Keep directory only if it matches the filters and has children left (or --only-dirs)
+    if node_matches(node, args) and (node.children or getattr(args, "only_dirs", False)):
         return node
 
     return None
@@ -776,6 +780,11 @@ def main() -> None:
         "--reverse",
         action="store_true",
         help="Reverse the sort order",
+    )
+    parser.add_argument(
+        "--only-dirs",
+        action="store_true",
+        help="Show only directories, exclude files and symlinks",
     )
     parser.add_argument(
         "-x",
