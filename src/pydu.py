@@ -77,6 +77,8 @@ class TreeNode:
             The depth of the node in the tree (root is 0).
         size (int):
             The total size in bytes (for directories, includes all contents).
+        original_size (int):
+            The original total size in bytes before filtering.
         mtime (float):
             The modification time as a Unix timestamp.
         children (list[TreeNode]):
@@ -91,6 +93,7 @@ class TreeNode:
     name: str
     depth: int
     size: int
+    original_size: int
     mtime: float
     children: list["TreeNode"] = field(default_factory=list)
     parent: "TreeNode | None" = None
@@ -448,6 +451,7 @@ def build_tree(
         name=os.path.basename(path) or "/",
         depth=depth,
         size=0,
+        original_size=0,
         mtime=0.0,
         children=[],
         parent=parent,
@@ -468,6 +472,7 @@ def build_tree(
                             name=entry.name,
                             depth=depth + 1,
                             size=lstat.st_size,
+                            original_size=lstat.st_size,
                             mtime=lstat.st_mtime,
                             children=[],
                             parent=node,
@@ -484,6 +489,7 @@ def build_tree(
                             name=entry.name,
                             depth=depth + 1,
                             size=file_size,
+                            original_size=file_size,
                             mtime=file_mtime,
                             children=[],
                             parent=node,
@@ -511,6 +517,8 @@ def build_tree(
         node.node_type = NodeType.DIRECTORY
     except OSError:
         node.mtime = 0.0
+
+    node.original_size = node.size
 
     return node
 
@@ -659,7 +667,10 @@ def print_tree(
         line_prefix = prefix + ("└─ " if is_last else "├─ ")
 
     # Format size with optional coloring
-    node_size = color_size(node.size, human, use_color)
+    if node.original_size != node.size:
+        node_size = f"{color_size(node.size, human, use_color)} ({color_size(node.original_size, human, use_color)})"
+    else:
+        node_size = color_size(node.size, human, use_color)
 
     # Get the parent total size if not provided.
     parent_size = node.parent.size if node.parent else node.size
@@ -882,7 +893,10 @@ def main() -> None:
 
     # Output results
     if args.summarize:
-        total_size = color_size(root_node.size, args.human_readable, args.color)
+        if filtered_root.original_size != filtered_root.size:
+            total_size = f"{color_size(filtered_root.size, args.human_readable, args.color)} ({color_size(filtered_root.original_size, args.human_readable, args.color)})"
+        else:
+            total_size = color_size(filtered_root.size, args.human_readable, args.color)
         print(f"{total_size} {args.path}")
     else:
         print_tree(
