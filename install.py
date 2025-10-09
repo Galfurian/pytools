@@ -74,17 +74,21 @@ def check_command_exists(command):
     return shutil.which(command) is not None
 
 
-def install_all_scripts(install_dir=None):
+def install_all_scripts(args):
     """Install all scripts in src/ with safety checks."""
     src_dir = Path(__file__).parent / "src"
     if not src_dir.exists():
         logger.error(f"{src_dir} does not exist.")
         return False
 
+    install_dir = args.install_dir
     if install_dir is None:
         install_dir = Path.home() / ".local" / "bin"
     install_dir = Path(install_dir)
-    install_dir.mkdir(parents=True, exist_ok=True)
+    if not args.dry_run:
+        install_dir.mkdir(parents=True, exist_ok=True)
+    else:
+        logger.info(f"Would create directory {install_dir} (if it doesn't exist)")
 
     success_count = 0
     total_count = 0
@@ -92,6 +96,10 @@ def install_all_scripts(install_dir=None):
     for script_path in src_dir.glob("*.py"):
         total_count += 1
         script_name = script_path.stem
+
+        # Skip __init__.py and other special files
+        if script_name == "__init__":
+            continue
 
         logger.info(f"Processing {script_name}...")
 
@@ -110,19 +118,27 @@ def install_all_scripts(install_dir=None):
 
         if target_path.exists():
             logger.warning(f"Warning: {target_path} already exists.")
-            response = input("  Do you want to overwrite? (Y/n): ").strip().lower()
-            if response == "n":
-                logger.info(f"Skipped: Installation cancelled for {script_name}.")
-                continue
+            if args.dry_run:
+                logger.info(f"Would prompt to overwrite {target_name} (dry-run)")
+            else:
+                response = input("  Do you want to overwrite? (Y/n): ").strip().lower()
+                if response == "n":
+                    logger.info(f"Skipped: Installation cancelled for {script_name}.")
+                    continue
 
-        shutil.copy2(script_path, target_path)
-        target_path.chmod(0o755)
-
-        logger.info(f"Successfully installed {target_name} to {target_path}")
+        if args.dry_run:
+            logger.info(f"Would install {target_name} to {target_path} (dry-run)")
+        else:
+            shutil.copy2(script_path, target_path)
+            target_path.chmod(0o755)
+            logger.info(f"Successfully installed {target_name} to {target_path}")
         success_count += 1
 
-    logger.info(f"\nInstalled {success_count} out of {total_count} scripts.")
-    logger.info(f"Make sure {install_dir} is in your PATH.")
+    if args.dry_run:
+        logger.info(f"\nWould install {success_count} out of {total_count} scripts (dry-run).")
+    else:
+        logger.info(f"\nInstalled {success_count} out of {total_count} scripts.")
+        logger.info(f"Make sure {install_dir} is in your PATH.")
     return success_count > 0
 
 
@@ -144,9 +160,14 @@ def main():
         "--install-dir",
         help="Directory to install to (default: ~/.local/bin)",
     )
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Show what would be installed without actually installing",
+    )
     args = parser.parse_args()
 
-    success = install_all_scripts(args.install_dir)
+    success = install_all_scripts(args)
     sys.exit(0 if success else 1)
 
 
