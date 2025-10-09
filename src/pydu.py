@@ -15,7 +15,7 @@ import logging
 import os
 import sys
 import time
-from dataclasses import dataclass, asdict, field
+from dataclasses import dataclass, field
 from enum import Enum
 from typing import Callable
 
@@ -73,6 +73,8 @@ class TreeNode:
     Attributes:
         name (str):
             The name of the file or directory.
+        depth (int):
+            The depth of the node in the tree (root is 0).
         size (int):
             The total size in bytes (for directories, includes all contents).
         mtime (float):
@@ -87,6 +89,7 @@ class TreeNode:
     """
 
     name: str
+    depth: int
     size: int
     mtime: float
     children: list["TreeNode"] = field(default_factory=list)
@@ -94,10 +97,18 @@ class TreeNode:
     node_type: NodeType = NodeType.DIRECTORY
 
     def get_path(self) -> str:
-        """Get the full path from root to this node."""
+        """
+        Get the full path from root to this node.
+        """
         if self.parent is None:
             return self.name
         return os.path.join(self.parent.get_path(), self.name)
+
+    def get_max_size(self) -> int:
+        """
+        Get the maximum size among the children of this node.
+        """
+        return max((child.size for child in self.children), default=0)
 
 
 def human_size_parts(size: float) -> tuple[str, str]:
@@ -410,6 +421,7 @@ def process_patterns(patterns):
 
 def build_tree(
     path: str,
+    depth: int,
     parent: TreeNode | None = None,
     progress_callback: Callable[[], None] = lambda: None,
 ) -> TreeNode:
@@ -419,8 +431,12 @@ def build_tree(
     Args:
         path (str):
             Directory path to analyze
+        depth (int):
+            Current depth in the tree (root is 0).
         parent (TreeNode | None):
             Parent node (None for root)
+        progress_callback (Callable[[], None]):
+            Callback function to report progress (called for each item scanned)
 
     Returns:
         TreeNode:
@@ -430,6 +446,7 @@ def build_tree(
     # Create the TreeNode first so we can pass it as parent to recursive calls
     node = TreeNode(
         name=os.path.basename(path) or "/",
+        depth=depth,
         size=0,
         mtime=0.0,
         children=[],
@@ -449,6 +466,7 @@ def build_tree(
                     node.children.append(
                         TreeNode(
                             name=entry.name,
+                            depth=depth + 1,
                             size=lstat.st_size,
                             mtime=lstat.st_mtime,
                             children=[],
@@ -464,6 +482,7 @@ def build_tree(
                     node.children.append(
                         TreeNode(
                             name=entry.name,
+                            depth=depth + 1,
                             size=file_size,
                             mtime=file_mtime,
                             children=[],
@@ -473,9 +492,9 @@ def build_tree(
                     )
 
                 elif entry.is_dir():
-
                     sub_node = build_tree(
-                        entry.path,
+                        path=entry.path,
+                        depth=depth + 1,
                         parent=node,
                         progress_callback=progress_callback,
                     )
@@ -496,6 +515,86 @@ def build_tree(
     return node
 
 
+def node_matches(node: TreeNode, args: argparse.Namespace) -> bool:
+    """
+    Determine whether a node matches the filtering criteria provided in args.
+
+    This checks include/exclude patterns, size and age filters. Directories
+    are considered matching if they themselves match or if their children may
+    match (handled by filter_tree). This function only evaluates the node's
+    own properties.
+    """
+    # Include/exclude by name patterns
+    name = node.name
+    if args.exclude:
+        for pat in args.exclude:
+            if fnmatch.fnmatch(name, pat):
+                return False
+
+    if args.include:
+        matched = False
+        for pat in args.include:
+            if fnmatch.fnmatch(name, pat):
+                matched = True
+                break
+        if not matched:
+            return False
+
+    # Hidden files/directories.
+    if not args.show_hidden and name.startswith("."):
+        return False
+
+    # Size filters
+    if getattr(args, "min_size", None) is not None:
+        if node.size < args.min_size:
+            return False
+    if getattr(args, "max_size", None) is not None:
+        if node.size > args.max_size:
+            return False
+
+    # Age filter (older-than): node.mtime is compared to current time
+    if getattr(args, "older_than", None):
+        cutoff = time.time() - args.older_than
+        if node.mtime > cutoff:
+            return False
+
+    return True
+
+
+def filter_tree(node: TreeNode, args: argparse.Namespace) -> TreeNode | None:
+    """
+    Recursively filter a TreeNode tree according to args.
+
+    Returns the node if it (or any of its descendants) match the filters,
+    otherwise returns None to indicate the node should be pruned.
+
+    Directories that don't match but have matching children will be kept with
+    only the matching children.
+    """
+    # Files and symlinks: simple match
+    if node.node_type in (NodeType.FILE, NodeType.SYMLINK):
+        return node if node_matches(node, args) else None
+
+    # For directories, filter children first
+    new_children: list[TreeNode] = []
+    for child in list(node.children):
+        kept = filter_tree(child, args)
+        if kept is not None:
+            new_children.append(kept)
+
+    node.children = new_children
+
+    # Recompute directory size as sum of children sizes (since we may have
+    # removed some children). Keep original mtime/name.
+    node.size = sum((c.size for c in node.children), 0)
+
+    # Keep directory if it matches itself or it has any children left
+    if node.children:
+        return node
+
+    return node if node_matches(node, args) else None
+
+
 def sort_key_size(node: TreeNode) -> int:
     """Sort key function for sorting by size."""
     return node.size
@@ -511,46 +610,15 @@ def sort_key_name(node: TreeNode) -> str:
     return node.name
 
 
-def compute_depth_totals(node: TreeNode, max_depth: int) -> dict[int, int]:
-    """
-    Compute total sizes grouped by directory depth.
-
-    Args:
-        node (TreeNode): Root node to analyze
-        max_depth (int): Maximum depth to compute totals for
-
-    Returns:
-        dict[int, int]: Dictionary mapping depth to total size at that depth
-    """
-    totals = {}
-
-    def traverse(current_node: TreeNode, depth: int):
-        if depth > max_depth:
-            return
-        if depth not in totals:
-            totals[depth] = 0
-        totals[depth] += current_node.size
-
-        if current_node.children:
-            for child in current_node.children:
-                traverse(child, depth + 1)
-
-    traverse(node, 0)
-    return totals
-
-
 def print_tree(
     node: TreeNode,
     prefix: str = "",
-    depth: int = 0,
     max_depth: int | None = None,
     sort_by: str = "name",
     reverse: bool = False,
     human: bool = False,
-    color: bool = False,
+    use_color: bool = False,
     size_bars: bool = False,
-    max_size_in_level: int = 0,
-    parent_total_size: int = 0,
     is_last: bool = True,
 ) -> None:
     """
@@ -566,28 +634,24 @@ def print_tree(
         max_depth (int | None):
             Maximum depth to display (None for unlimited)
         sort_by (str):
-            Sort criteria ("name" or "size")
+            Sort criteria ("name" or "size" or "mtime")
         reverse (bool):
             Whether to reverse the sort order
         human (bool):
             Whether to use human-readable size format
-        color (bool):
+        use_color (bool):
             Whether to use ANSI color codes
         size_bars (bool):
             Whether to display visual size bars
-        max_size_in_level (int):
-            Maximum size among siblings at this level (for bar scaling)
-        parent_total_size (int):
-            Total size of parent directory (for percentage calculation)
         is_last (bool):
             Whether this is the last item in its parent's list
 
     """
-    if max_depth is not None and depth > max_depth:
+    if max_depth is not None and node.depth > max_depth:
         return
 
     # Create tree branch symbol (only for non-root nodes), and also update prefix.
-    if depth == 0:
+    if node.depth == 0:
         new_prefix = ""
         line_prefix = ""
     else:
@@ -595,32 +659,28 @@ def print_tree(
         line_prefix = prefix + ("└─ " if is_last else "├─ ")
 
     # Format size with optional coloring
-    s = color_size(node.size, human, color)
+    node_size = color_size(node.size, human, use_color)
 
-    # Add size bar if enabled
+    # Get the parent total size if not provided.
+    parent_size = node.parent.size if node.parent else node.size
+
+    # Add size bar if enabled.
     bar_str = ""
-    if size_bars and max_size_in_level > 0:
-        pct_size = parent_total_size if parent_total_size > 0 else max_size_in_level
-        bar = size_bar(
-            size=node.size,
-            max_size=pct_size,
-            width=10,
-            use_color=color,
-        )
-        bar_str = f"{bar} "
+    if size_bars:
+        bar_str = f"{size_bar(node.size, parent_size, 10, use_color)} "
 
-    # Print current item
-    colored_name = color_name(node.name, node.node_type, color)
+    # Print current item.
+    colored_name = color_name(node.name, node.node_type, use_color)
     if node.node_type == NodeType.FILE:
-        print(f"{bar_str}{line_prefix}{colored_name} {s}")
+        print(f"{bar_str}{line_prefix}{colored_name} {node_size}")
     elif node.node_type == NodeType.SYMLINK:
-        print(f"{bar_str}{line_prefix}{colored_name} {s}")
+        print(f"{bar_str}{line_prefix}{colored_name} {node_size}")
     else:
-        print(f"{bar_str}{line_prefix}{colored_name}/ {s}")
+        print(f"{bar_str}{line_prefix}{colored_name}/ {node_size}")
 
     # Stop recursion if no children or max depth reached
     if node.node_type == NodeType.FILE or (
-        max_depth is not None and depth >= max_depth
+        max_depth is not None and node.depth >= max_depth
     ):
         return
 
@@ -633,30 +693,20 @@ def print_tree(
         else:  # name
             node.children.sort(key=sort_key_name, reverse=reverse)
 
-    # Calculate max size for this level (for size bars)
-    level_max_size = (
-        max((child.size for child in node.children), default=0)
-        if size_bars and node.children
-        else 0
-    )
-
     # Recursively print children
     if node.children:
         for i, child in enumerate(node.children):
-            sub_last = i == len(node.children) - 1
+            is_last_child = i == len(node.children) - 1
             print_tree(
                 node=child,
                 prefix=new_prefix,
-                depth=depth + 1,
                 max_depth=max_depth,
                 sort_by=sort_by,
                 reverse=reverse,
                 human=human,
-                color=color,
+                use_color=use_color,
                 size_bars=size_bars,
-                max_size_in_level=level_max_size,
-                parent_total_size=node.size,
-                is_last=sub_last,
+                is_last=is_last_child,
             )
 
 
@@ -683,12 +733,6 @@ def main() -> None:
         nargs="?",
         default=".",
         help="Path to analyze (default: current directory)",
-    )
-    parser.add_argument(
-        "-a",
-        "--all",
-        action="store_true",
-        help="Show files as well as directories",
     )
     parser.add_argument(
         "-H",
@@ -751,33 +795,30 @@ def main() -> None:
         help="Only show items smaller than this size (e.g., '100MB', '1.5GB', '500KB')",
     )
     parser.add_argument(
+        "--older-than",
+        type=str,
+        default=None,
+        help="Only show items older than specified duration (e.g., '30d', '1w', '2M')",
+    )
+    parser.add_argument(
         "-b",
         "--size-bars",
         action="store_true",
         help="Display visual size bars showing relative sizes",
     )
     parser.add_argument(
+        "-sh",
+        "--show-hidden",
+        default=False,
+        action="store_true",
+        help="Include hidden files and directories (default is to exclude them)",
+    )
+    parser.add_argument(
         "-c",
         "--color",
-        choices=["always", "never", "auto"],
-        default="auto",
-        help="Use colors in output (default: auto)",
-    )
-    parser.add_argument(
-        "--json",
+        default=True,
         action="store_true",
-        help="Export results as JSON",
-    )
-    parser.add_argument(
-        "--csv",
-        action="store_true",
-        help="Export results as CSV",
-    )
-    parser.add_argument(
-        "--older-than",
-        type=str,
-        default=None,
-        help="Only show items older than specified duration (e.g., '30d', '1w', '2M')",
+        help="Use colors in output",
     )
 
     args = parser.parse_args()
@@ -793,7 +834,7 @@ def main() -> None:
     logger.setLevel(logging.INFO)
 
     # Determine if colors should be used
-    use_color = args.color == "always" or (args.color == "auto" and sys.stdout.isatty())
+    args.color = args.color and sys.stdout.isatty()
 
     # Parse size filters with error handling.
     try:
@@ -827,33 +868,32 @@ def main() -> None:
     # Build the directory tree.
     root_node = build_tree(
         path=abs_path,
+        depth=0,
         parent=None,
         progress_callback=progress_callback,
     )
     # Clear progress line.
     print(file=sys.stderr)
 
+    # Apply filtering to the built tree. build_tree stays agnostic of filters.
+    filtered_root = filter_tree(root_node, args)
+    if filtered_root is None:
+        logger.info("No items match the given filters.")
+        sys.exit(0)
+
     # Output results
     if args.summarize:
-        s = color_size(root_node.size, args.human_readable, use_color)
-        print(f"{s} {args.path}")
+        total_size = color_size(root_node.size, args.human_readable, args.color)
+        print(f"{total_size} {args.path}")
     else:
-        root_max_size = (
-            max((node.size for node in root_node.children), default=root_node.size)
-            if root_node.children
-            else root_node.size
-        )
         print_tree(
-            node=root_node,
-            depth=0,
+            node=filtered_root,
             max_depth=args.max_depth,
             sort_by=args.sort_by,
             reverse=args.reverse,
             human=args.human_readable,
-            color=use_color,
+            use_color=args.color,
             size_bars=args.size_bars,
-            max_size_in_level=root_max_size,
-            parent_total_size=0,
             is_last=True,
         )
 
