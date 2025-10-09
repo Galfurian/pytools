@@ -110,8 +110,8 @@ def install_all_scripts(install_dir=None):
 
         if target_path.exists():
             logger.warning(f"Warning: {target_path} already exists.")
-            response = input("  Do you want to overwrite? (y/N): ").strip().lower()
-            if response != "y":
+            response = input("  Do you want to overwrite? (Y/n): ").strip().lower()
+            if response == "n":
                 logger.info(f"Skipped: Installation cancelled for {script_name}.")
                 continue
 
