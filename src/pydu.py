@@ -596,35 +596,6 @@ def compute_depth_totals(node: TreeNode, max_depth: int) -> dict[int, int]:
     return totals
 
 
-def compute_grouped_summary(node: TreeNode) -> dict[str, int]:
-    """
-    Compute grouped summary of files vs directories.
-
-    Args:
-        node (TreeNode): Root node to analyze
-
-    Returns:
-        dict[str, int]: Dictionary with 'files' and 'directories' size totals
-    """
-    file_size = 0
-    dir_size = 0
-
-    def traverse(current_node: TreeNode):
-        nonlocal file_size, dir_size
-        if current_node.node_type == NodeType.FILE:
-            # It's a file
-            file_size += current_node.size
-        else:
-            # It's a directory
-            dir_size += current_node.size
-            if current_node.children:
-                for child in current_node.children:
-                    traverse(child)
-
-    traverse(node)
-    return {"files": file_size, "directories": dir_size}
-
-
 def compute_file_types(node: TreeNode) -> dict[str, int]:
     """
     Compute cumulative sizes by file extension.
@@ -898,16 +869,16 @@ def main() -> None:
     )
     parser.add_argument(
         "-s",
-        "--summarize",
-        action="store_true",
-        help="Display only a total for the specified path",
-    )
-    parser.add_argument(
-        "-S",
         "--sort-by",
         choices=["name", "size", "mtime"],
         default="name",
         help="Sort output by name, size, or modification time (default: name)",
+    )
+    parser.add_argument(
+        "-S",
+        "--summarize",
+        action="store_true",
+        help="Display only a total for the specified path",
     )
     parser.add_argument(
         "-r",
@@ -962,12 +933,6 @@ def main() -> None:
         type=int,
         default=None,
         help="Show size totals grouped by directory level up to specified depth",
-    )
-    parser.add_argument(
-        "-g",
-        "--grouped",
-        action="store_true",
-        help="Show grouped summary (files vs directories)",
     )
     parser.add_argument(
         "--by-type",
@@ -1078,15 +1043,6 @@ def main() -> None:
             s = color_size(totals[depth], args.human_readable, use_color)
             indent = "  " * depth
             print(f"{indent}Depth {depth}: {s}")
-    elif args.grouped:
-        # Show grouped summary
-        summary = compute_grouped_summary(root_node)
-        files_s = color_size(summary["files"], args.human_readable, use_color)
-        dirs_s = color_size(summary["directories"], args.human_readable, use_color)
-        print(f"Files: {files_s}")
-        print(f"Directories: {dirs_s}")
-        total_s = color_size(root_node.size, args.human_readable, use_color)
-        print(f"Total: {total_s}")
     elif args.by_type:
         # Show file type aggregation
         types = compute_file_types(root_node)
