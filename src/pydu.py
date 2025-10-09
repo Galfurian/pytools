@@ -8,11 +8,12 @@ filtering capabilities. Hidden files and directories are excluded by default.
 """
 
 import argparse
-import csv
 import fnmatch
-import json
+import grp
 import logging
 import os
+import pwd
+import stat
 import sys
 import time
 from dataclasses import dataclass, field
@@ -81,6 +82,12 @@ class TreeNode:
             The original total size in bytes before filtering.
         mtime (float):
             The modification time as a Unix timestamp.
+        mode (int):
+            The file mode (permissions).
+        uid (int):
+            The user ID of the owner.
+        gid (int):
+            The group ID of the owner.
         children (list[TreeNode]):
             List of child nodes (empty for files).
         parent (TreeNode | None):
@@ -95,6 +102,9 @@ class TreeNode:
     size: int
     original_size: int
     mtime: float
+    mode: int
+    uid: int
+    gid: int
     children: list["TreeNode"] = field(default_factory=list)
     parent: "TreeNode | None" = None
     node_type: NodeType = NodeType.DIRECTORY
@@ -447,12 +457,16 @@ def build_tree(
             containing its total size and child nodes
     """
     # Create the TreeNode first so we can pass it as parent to recursive calls
+    root_stat = os.lstat(path)
     node = TreeNode(
         name=os.path.basename(path) or "/",
         depth=depth,
         size=0,
         original_size=0,
-        mtime=0.0,
+        mtime=root_stat.st_mtime,
+        mode=root_stat.st_mode,
+        uid=root_stat.st_uid,
+        gid=root_stat.st_gid,
         children=[],
         parent=parent,
     )
@@ -474,6 +488,9 @@ def build_tree(
                             size=lstat.st_size,
                             original_size=lstat.st_size,
                             mtime=lstat.st_mtime,
+                            mode=lstat.st_mode,
+                            uid=lstat.st_uid,
+                            gid=lstat.st_gid,
                             children=[],
                             parent=node,
                             node_type=NodeType.SYMLINK,
@@ -491,6 +508,9 @@ def build_tree(
                             size=file_size,
                             original_size=file_size,
                             mtime=file_mtime,
+                            mode=lstat.st_mode,
+                            uid=lstat.st_uid,
+                            gid=lstat.st_gid,
                             children=[],
                             parent=node,
                             node_type=NodeType.FILE,
@@ -601,7 +621,9 @@ def filter_tree(node: TreeNode, args: argparse.Namespace) -> TreeNode | None:
     node.size = sum((c.size for c in node.children), 0)
 
     # Keep directory only if it matches the filters and has children left (or --only-dirs)
-    if node_matches(node, args) and (node.children or getattr(args, "only_dirs", False)):
+    if node_matches(node, args) and (
+        node.children or getattr(args, "only_dirs", False)
+    ):
         return node
 
     return None
@@ -624,13 +646,8 @@ def sort_key_name(node: TreeNode) -> str:
 
 def print_tree(
     node: TreeNode,
+    args,
     prefix: str = "",
-    max_depth: int | None = None,
-    sort_by: str = "name",
-    reverse: bool = False,
-    human: bool = False,
-    use_color: bool = False,
-    size_bars: bool = False,
     is_last: bool = True,
 ) -> None:
     """
@@ -639,27 +656,14 @@ def print_tree(
     Args:
         node (TreeNode):
             TreeNode to print
+        args:
+            Parsed command-line arguments
         prefix (str):
             Current tree prefix string for indentation
-        depth (int):
-            Current depth in the tree
-        max_depth (int | None):
-            Maximum depth to display (None for unlimited)
-        sort_by (str):
-            Sort criteria ("name" or "size" or "mtime")
-        reverse (bool):
-            Whether to reverse the sort order
-        human (bool):
-            Whether to use human-readable size format
-        use_color (bool):
-            Whether to use ANSI color codes
-        size_bars (bool):
-            Whether to display visual size bars
         is_last (bool):
-            Whether this is the last item in its parent's list
-
+            Whether this is the last child in the parent's list
     """
-    if max_depth is not None and node.depth > max_depth:
+    if args.max_depth is not None and node.depth > args.max_depth:
         return
 
     # Create tree branch symbol (only for non-root nodes), and also update prefix.
@@ -672,41 +676,51 @@ def print_tree(
 
     # Format size with optional coloring
     if node.original_size != node.size:
-        node_size = f"{color_size(node.size, human, use_color)} ({color_size(node.original_size, human, use_color)})"
+        node_size = f"{color_size(node.size, args.human_readable, args.color)} ({color_size(node.original_size, args.human_readable, args.color)})"
     else:
-        node_size = color_size(node.size, human, use_color)
+        node_size = color_size(node.size, args.human_readable, args.color)
 
     # Get the parent total size if not provided.
     parent_size = node.parent.size if node.parent else node.size
 
     # Add size bar if enabled.
     bar_str = ""
-    if size_bars:
-        bar_str = f"{size_bar(node.size, parent_size, 10, use_color)} "
+    if args.size_bars:
+        bar_str = f"{size_bar(node.size, parent_size, 10, args.color)} "
 
     # Print current item.
-    colored_name = color_name(node.name, node.node_type, use_color)
+    colored_name = color_name(node.name, node.node_type, args.color)
+    details_str = ""
+    if args.details:
+        try:
+            owner = pwd.getpwuid(node.uid).pw_name
+            group = grp.getgrgid(node.gid).gr_name
+            perms = stat.filemode(node.mode)
+            mtime_str = time.strftime('%Y-%m-%d %H:%M', time.localtime(node.mtime))
+            details_str = f" [{perms} {owner} {group} {mtime_str}]"
+        except KeyError:
+            details_str = f" [{stat.filemode(node.mode)} {node.uid} {node.gid} {time.strftime('%Y-%m-%d %H:%M', time.localtime(node.mtime))}]"
     if node.node_type == NodeType.FILE:
-        print(f"{bar_str}{line_prefix}{colored_name} {node_size}")
+        print(f"{bar_str}{line_prefix}{colored_name}{details_str} {node_size}")
     elif node.node_type == NodeType.SYMLINK:
-        print(f"{bar_str}{line_prefix}{colored_name} {node_size}")
+        print(f"{bar_str}{line_prefix}{colored_name}{details_str} {node_size}")
     else:
-        print(f"{bar_str}{line_prefix}{colored_name}/ {node_size}")
+        print(f"{bar_str}{line_prefix}{colored_name}/{details_str} {node_size}")
 
     # Stop recursion if no children or max depth reached
     if node.node_type == NodeType.FILE or (
-        max_depth is not None and node.depth >= max_depth
+        args.max_depth is not None and node.depth >= args.max_depth
     ):
         return
 
     # Sort children based on criteria
     if node.children:
-        if sort_by == "size":
-            node.children.sort(key=sort_key_size, reverse=reverse)
-        elif sort_by == "mtime":
-            node.children.sort(key=sort_key_mtime, reverse=reverse)
+        if args.sort_by == "size":
+            node.children.sort(key=sort_key_size, reverse=args.reverse)
+        elif args.sort_by == "mtime":
+            node.children.sort(key=sort_key_mtime, reverse=args.reverse)
         else:  # name
-            node.children.sort(key=sort_key_name, reverse=reverse)
+            node.children.sort(key=sort_key_name, reverse=args.reverse)
 
     # Recursively print children
     if node.children:
@@ -714,13 +728,8 @@ def print_tree(
             is_last_child = i == len(node.children) - 1
             print_tree(
                 node=child,
+                args=args,
                 prefix=new_prefix,
-                max_depth=max_depth,
-                sort_by=sort_by,
-                reverse=reverse,
-                human=human,
-                use_color=use_color,
-                size_bars=size_bars,
                 is_last=is_last_child,
             )
 
@@ -839,6 +848,11 @@ def main() -> None:
         action="store_true",
         help="Use colors in output",
     )
+    parser.add_argument(
+        "--details",
+        action="store_true",
+        help="Show detailed file information (permissions, owner, group, modification time)",
+    )
 
     args = parser.parse_args()
 
@@ -910,13 +924,7 @@ def main() -> None:
     else:
         print_tree(
             node=filtered_root,
-            max_depth=args.max_depth,
-            sort_by=args.sort_by,
-            reverse=args.reverse,
-            human=args.human_readable,
-            use_color=args.color,
-            size_bars=args.size_bars,
-            is_last=True,
+            args=args,
         )
 
 
