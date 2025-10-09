@@ -246,6 +246,31 @@ def parse_time_duration(duration_str: str) -> float:
     )
 
 
+def colored(text: str, color_code: str, light: bool = False) -> str:
+    """
+    Apply ANSI color codes to text.
+
+    Args:
+        text (str):
+            Text to color
+        color_code (str):
+            ANSI color code (e.g., "31" for red, "32" for green)
+        light (bool):
+            Whether to use light (bright) variant of the color
+
+    Returns:
+        str:
+            Text wrapped with ANSI color codes
+
+    Note:
+        Always resets color to default at the end
+
+    """
+    if light:
+        color_code = f"1;{color_code}"
+    return f"\033[{color_code}m{text}\033[0m"
+
+
 def color_size(size: int, human: bool, use_color: bool) -> str:
     """
     Format a size with optional human-readable conversion and ANSI coloring.
@@ -283,31 +308,6 @@ def color_size(size: int, human: bool, use_color: bool) -> str:
     }
     col = unit_colors.get(unit, "37")  # white fallback
     return colored(s, col)
-
-
-def colored(text: str, color_code: str, light: bool = False) -> str:
-    """
-    Apply ANSI color codes to text.
-
-    Args:
-        text (str):
-            Text to color
-        color_code (str):
-            ANSI color code (e.g., "31" for red, "32" for green)
-        light (bool):
-            Whether to use light (bright) variant of the color
-
-    Returns:
-        str:
-            Text wrapped with ANSI color codes
-
-    Note:
-        Always resets color to default at the end
-
-    """
-    if light:
-        color_code = f"1;{color_code}"
-    return f"\033[{color_code}m{text}\033[0m"
 
 
 def color_name(name: str, node_type: NodeType, use_color: bool) -> str:
@@ -390,56 +390,43 @@ def size_bar(
     return f"[{bar}{ratio:4.0%}]"
 
 
+def process_patterns(patterns):
+    """
+    Process comma-separated pattern strings into a list of stripped patterns.
+
+    Args:
+        patterns (list[str]):
+            List of pattern strings, potentially comma-separated
+
+    Returns:
+        list[str]:
+            List of stripped, non-empty patterns
+    """
+    processed_patterns = []
+    for pattern in patterns:
+        processed_patterns.extend(pattern.split(","))
+    return [pattern.strip() for pattern in processed_patterns if pattern.strip()]
+
+
 def build_tree(
     path: str,
-    excludes: list[str] | None = None,
-    includes: list[str] | None = None,
-    show_all: bool = False,
-    min_size: int | None = None,
-    max_size: int | None = None,
-    older_than: float | None = None,
-    progress_callback: Callable[[], None] | None = None,
     parent: TreeNode | None = None,
+    progress_callback: Callable[[], None] = lambda: None,
 ) -> TreeNode:
     """
-    Recursively build a tree structure representing directory contents with filtering options.
+    Recursively build a complete tree structure representing directory contents.
 
     Args:
         path (str):
             Directory path to analyze
-        excludes (list[str] | None):
-            List of fnmatch patterns to exclude
-        includes (list[str] | None):
-            List of fnmatch patterns to include (if specified, only matching items shown)
-        show_all (bool):
-            Whether to include files in output (not just directories)
-        min_size (int | None):
-            Minimum size threshold in bytes (None for no minimum)
-        max_size (int | None):
-            Maximum size threshold in bytes (None for no maximum)
-        older_than (float | None):
-            Only include items older than this many seconds (None for no age filter)
-        progress_callback (Callable[[], None] | None):
-            Callback function to call for progress updates (None for no progress)
+        parent (TreeNode | None):
+            Parent node (None for root)
 
     Returns:
         TreeNode:
             Root TreeNode representing the directory/file at the given path,
             containing its total size and child nodes
-    Note:
-        Hidden files and directories (starting with '.') are excluded by default.
-        Directories are filtered based on their total size (including contents).
-        Files are filtered based on their individual size. Symlinks are counted
-        by their link size, not target size.
-
     """
-    if excludes is None:
-        excludes = []
-    if includes is None:
-        includes = []
-    current_time = time.time()
-    age_threshold = current_time - (older_than or 0)
-
     # Create the TreeNode first so we can pass it as parent to recursive calls
     node = TreeNode(
         name=os.path.basename(path) or "/",
@@ -452,101 +439,57 @@ def build_tree(
     try:
         with os.scandir(path) as it:
             for entry in it:
-                # Check inclusion patterns first (if specified, only include matching items)
-                if includes and not any(
-                    fnmatch.fnmatch(entry.name, patt) for patt in includes
-                ):
-                    continue
-
-                # Skip hidden files and directories by default (unless explicitly included)
-                if entry.name.startswith(".") and not includes:
-                    continue
-
-                # Check exclusion patterns
-                skip = any(fnmatch.fnmatch(entry.name, patt) for patt in excludes)
-                if skip:
-                    continue
-
                 lstat = entry.stat(follow_symlinks=False)
 
-                if entry.is_symlink():
-                    # Count symlink size but don't traverse.
-                    node.size += lstat.st_size
-                    # Filter symlinks if show_all is enabled
-                    if show_all:
-                        node.children.append(
-                            TreeNode(
-                                name=entry.name,
-                                size=lstat.st_size,
-                                mtime=lstat.st_mtime,
-                                children=[],
-                                parent=node,
-                                node_type=NodeType.SYMLINK,
-                            )
-                        )
-                    continue
+                progress_callback()
 
-                if entry.is_file():
+                if entry.is_symlink():
+                    # Count symlink size but don't traverse
+                    node.size += lstat.st_size
+                    node.children.append(
+                        TreeNode(
+                            name=entry.name,
+                            size=lstat.st_size,
+                            mtime=lstat.st_mtime,
+                            children=[],
+                            parent=node,
+                            node_type=NodeType.SYMLINK,
+                        )
+                    )
+
+                elif entry.is_file():
                     file_size = lstat.st_size
                     file_mtime = lstat.st_mtime
-                    # Check age filter
-                    if older_than and file_mtime > age_threshold:
-                        continue
                     node.size += file_size
-                    if progress_callback:
-                        progress_callback()
-                    # Filter files by size if specified and show_all is enabled
-                    if (
-                        show_all
-                        and (min_size is None or file_size >= min_size)
-                        and (max_size is None or file_size <= max_size)
-                    ):
-                        node.children.append(
-                            TreeNode(
-                                name=entry.name,
-                                size=file_size,
-                                mtime=file_mtime,
-                                children=[],
-                                parent=node,
-                                node_type=NodeType.FILE,
-                            )
+                    node.children.append(
+                        TreeNode(
+                            name=entry.name,
+                            size=file_size,
+                            mtime=file_mtime,
+                            children=[],
+                            parent=node,
+                            node_type=NodeType.FILE,
                         )
+                    )
 
                 elif entry.is_dir():
-                    # Check age filter for directory
-                    dir_mtime = lstat.st_mtime
-                    if older_than and dir_mtime > age_threshold:
-                        continue
-                    if progress_callback:
-                        progress_callback()
-                    # Recursively scan subdirectory
+
                     sub_node = build_tree(
-                        path=entry.path,
-                        excludes=excludes,
-                        includes=None,
-                        show_all=show_all,
-                        min_size=min_size,
-                        max_size=max_size,
-                        older_than=older_than,
+                        entry.path,
+                        parent=node,
                         progress_callback=progress_callback,
-                        parent=node,  # Pass current node as parent
                     )
                     node.size += sub_node.size
-                    # Filter directories by total size if specified
-                    if (min_size is None or sub_node.size >= min_size) and (
-                        max_size is None or sub_node.size <= max_size
-                    ):
-                        node.children.append(sub_node)
-
+                    node.children.append(sub_node)
     except PermissionError:
         logger.exception(f"Permission denied: {path}")
     except OSError:
         logger.exception(f"Error accessing {path}")
-
-    # Update node with final mtime
+    # Update node with final mtime.
     try:
         path_stat = os.stat(path, follow_symlinks=False)
         node.mtime = path_stat.st_mtime
+        node.node_type = NodeType.DIRECTORY
     except OSError:
         node.mtime = 0.0
 
@@ -594,113 +537,6 @@ def compute_depth_totals(node: TreeNode, max_depth: int) -> dict[int, int]:
 
     traverse(node, 0)
     return totals
-
-
-def compute_file_types(node: TreeNode) -> dict[str, int]:
-    """
-    Compute cumulative sizes by file extension.
-
-    Args:
-        node (TreeNode): Root node to analyze
-
-    Returns:
-        dict[str, int]: Dictionary mapping file extension to total size
-    """
-    types = {}
-
-    def traverse(current_node: TreeNode):
-        if current_node.node_type == NodeType.FILE:
-            # It's a file
-            _, ext = os.path.splitext(current_node.name)
-            ext = ext.lower() if ext else "(no extension)"
-            if ext not in types:
-                types[ext] = 0
-            types[ext] += current_node.size
-        elif current_node.children:
-            for child in current_node.children:
-                traverse(child)
-
-    traverse(node)
-    return types
-
-
-def collect_all_nodes(node: TreeNode, include_files: bool = True) -> list[TreeNode]:
-    """
-    Collect all nodes in the tree for top-N analysis.
-
-    Args:
-        node (TreeNode): Root node to analyze
-        include_files (bool): Whether to include files in the collection
-
-    Returns:
-        list[TreeNode]: List of all nodes
-    """
-    nodes = []
-
-    def traverse(current_node: TreeNode):
-        if current_node.node_type == NodeType.FILE:
-            if include_files:
-                nodes.append(current_node)
-        else:
-            nodes.append(current_node)
-            if current_node.children:
-                for child in current_node.children:
-                    traverse(child)
-
-    traverse(node)
-    return nodes
-
-
-def export_to_json(node: TreeNode) -> str:
-    """
-    Export tree structure to JSON.
-
-    Args:
-        node (TreeNode): Root node to export
-
-    Returns:
-        str: JSON representation of the tree
-    """
-    return json.dumps(asdict(node), indent=2)
-
-
-def export_to_csv(node: TreeNode, include_files: bool = True) -> str:
-    """
-    Export tree structure to CSV format.
-
-    Args:
-        node (TreeNode): Root node to export
-        include_files (bool): Whether to include files in export
-
-    Returns:
-        str: CSV representation of the tree data
-    """
-    import io
-
-    output = io.StringIO()
-    writer = csv.writer(output)
-    writer.writerow(["path", "size", "mtime", "type"])
-
-    def traverse(current_node: TreeNode, path: str = ""):
-        current_path = (
-            os.path.join(path, current_node.name) if path else current_node.name
-        )
-        node_type = current_node.node_type.value
-        if current_node.node_type == NodeType.FILE:
-            if include_files:
-                writer.writerow(
-                    [current_path, current_node.size, current_node.mtime, node_type]
-                )
-        else:
-            writer.writerow(
-                [current_path, current_node.size, current_node.mtime, node_type]
-            )
-            if current_node.children:
-                for child in current_node.children:
-                    traverse(child, current_path)
-
-    traverse(node)
-    return output.getvalue()
 
 
 def print_tree(
@@ -928,24 +764,6 @@ def main() -> None:
         help="Use colors in output (default: auto)",
     )
     parser.add_argument(
-        "-t",
-        "--depth-totals",
-        type=int,
-        default=None,
-        help="Show size totals grouped by directory level up to specified depth",
-    )
-    parser.add_argument(
-        "--by-type",
-        action="store_true",
-        help="Show cumulative size by file extension",
-    )
-    parser.add_argument(
-        "--top",
-        type=int,
-        default=None,
-        help="Show top N largest items (files and directories)",
-    )
-    parser.add_argument(
         "--json",
         action="store_true",
         help="Export results as JSON",
@@ -964,21 +782,11 @@ def main() -> None:
 
     args = parser.parse_args()
 
-    # Process comma-separated exclude and include patterns
-    processed_excludes = []
-    for exclude in args.exclude:
-        processed_excludes.extend(exclude.split(","))
-    args.exclude = [
-        pattern.strip() for pattern in processed_excludes if pattern.strip()
-    ]
+    # Process comma-separated exclude and include patterns.
+    args.exclude = process_patterns(args.exclude)
+    args.include = process_patterns(args.include)
 
-    processed_includes = []
-    for include in args.include:
-        processed_includes.extend(include.split(","))
-    args.include = [
-        pattern.strip() for pattern in processed_includes if pattern.strip()
-    ]
-
+    # Set up logging with color support.
     handler = logging.StreamHandler()
     handler.setFormatter(ColorFormatter("%(levelname)s: %(message)s"))
     logger.addHandler(handler)
@@ -987,17 +795,14 @@ def main() -> None:
     # Determine if colors should be used
     use_color = args.color == "always" or (args.color == "auto" and sys.stdout.isatty())
 
-    # Parse size filters with error handling
-    min_size: int | None = None
-    max_size: int | None = None
-    older_than: float | None = None
+    # Parse size filters with error handling.
     try:
         if args.min_size:
-            min_size = parse_size(args.min_size)
+            args.min_size = parse_size(args.min_size)
         if args.max_size:
-            max_size = parse_size(args.max_size)
+            args.max_size = parse_size(args.max_size)
         if args.older_than:
-            older_than = parse_time_duration(args.older_than)
+            args.older_than = parse_time_duration(args.older_than)
     except ValueError:
         logger.exception("Error parsing size or time arguments")
         sys.exit(1)
@@ -1010,59 +815,28 @@ def main() -> None:
         logger.error(f"The path '{abs_path}' does not exist.")
         sys.exit(1)
 
-    # Set up progress tracking
+    # Set up progress tracking.
     scanned_count = 0
 
-    def progress_callback():
+    # Callback to update and print progress.
+    def progress_callback() -> None:
         nonlocal scanned_count
         scanned_count += 1
         print(f"\rScanned {scanned_count} items...", end="", file=sys.stderr)
 
+    # Build the directory tree.
     root_node = build_tree(
-        abs_path,
-        args.exclude,
-        args.include,
-        args.all,
-        min_size,
-        max_size,
-        older_than,
-        progress_callback,
+        path=abs_path,
+        parent=None,
+        progress_callback=progress_callback,
     )
-
-    # Clear progress line
+    # Clear progress line.
     print(file=sys.stderr)
 
     # Output results
     if args.summarize:
         s = color_size(root_node.size, args.human_readable, use_color)
         print(f"{s} {args.path}")
-    elif args.depth_totals is not None:
-        # Show depth totals
-        totals = compute_depth_totals(root_node, args.depth_totals)
-        for depth in sorted(totals.keys()):
-            s = color_size(totals[depth], args.human_readable, use_color)
-            indent = "  " * depth
-            print(f"{indent}Depth {depth}: {s}")
-    elif args.by_type:
-        # Show file type aggregation
-        types = compute_file_types(root_node)
-        for ext, size in sorted(types.items(), key=lambda x: x[1], reverse=True):
-            s = color_size(size, args.human_readable, use_color)
-            print(f"{ext}: {s}")
-    elif args.top is not None:
-        # Show top N largest items
-        all_nodes = collect_all_nodes(root_node, include_files=args.all)
-        sorted_nodes = sorted(all_nodes, key=lambda n: n.size, reverse=True)[: args.top]
-        for i, node in enumerate(sorted_nodes, 1):
-            s = color_size(node.size, args.human_readable, use_color)
-            item_type = node.node_type.value
-            print(f"{i}. {node.get_path()} ({item_type}): {s}")
-    elif args.json:
-        # Export as JSON
-        print(export_to_json(root_node))
-    elif args.csv:
-        # Export as CSV
-        print(export_to_csv(root_node, include_files=args.all))
     else:
         root_max_size = (
             max((node.size for node in root_node.children), default=root_node.size)
