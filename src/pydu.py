@@ -573,20 +573,20 @@ def node_matches(node: TreeNode, args: argparse.Namespace) -> bool:
         return False
 
     # Only directories.
-    if getattr(args, "only_dirs", False) and node.node_type != NodeType.DIRECTORY:
+    if args.only_dirs and node.node_type != NodeType.DIRECTORY:
         return False
 
     # Size filters (only for files and symlinks)
     if node.node_type != NodeType.DIRECTORY:
-        if getattr(args, "min_size", None) is not None:
+        if args.min_size is not None:
             if node.size < args.min_size:
                 return False
-        if getattr(args, "max_size", None) is not None:
+        if args.max_size is not None:
             if node.size > args.max_size:
                 return False
 
     # Age filter (older-than): node.mtime is compared to current time
-    if getattr(args, "older_than", None):
+    if args.older_than:
         cutoff = time.time() - args.older_than
         if node.mtime > cutoff:
             return False
@@ -622,7 +622,7 @@ def filter_tree(node: TreeNode, args: argparse.Namespace) -> TreeNode | None:
 
     # Keep directory only if it matches the filters and has children left (or --only-dirs)
     if node_matches(node, args) and (
-        node.children or getattr(args, "only_dirs", False)
+        node.children or args.only_dirs
     ):
         return node
 
@@ -696,7 +696,7 @@ def print_tree(
             owner = pwd.getpwuid(node.uid).pw_name
             group = grp.getgrgid(node.gid).gr_name
             perms = stat.filemode(node.mode)
-            mtime_str = time.strftime('%Y-%m-%d %H:%M', time.localtime(node.mtime))
+            mtime_str = time.strftime("%Y-%m-%d %H:%M", time.localtime(node.mtime))
             details_str = f" [{perms} {owner} {group} {mtime_str}]"
         except KeyError:
             details_str = f" [{stat.filemode(node.mode)} {node.uid} {node.gid} {time.strftime('%Y-%m-%d %H:%M', time.localtime(node.mtime))}]"
