@@ -311,7 +311,7 @@ def main():
     args = parser.parse_args()
 
     handler = logging.StreamHandler()
-    handler.setFormatter(ColorFormatter("%(levelname)s: %(message)s"))
+    handler.setFormatter(ColorFormatter("[%(levelname)-9s] %(message)s"))
     logger.addHandler(handler)
     logger.setLevel(logging.INFO)
 
@@ -345,13 +345,17 @@ def main():
                     or repo["untracked"]
                     or repo["special_states"]
                 )
-                status_color = logging.ERROR if is_unstable else logging.INFO
-                logger.log(status_color, f"\n{fullpath}:")
-
-                if repo["stale_days"] is not None:
-                    logger.warning(
-                        f"  Stale: {repo['stale_days']} days since last commit"
-                    )
+                print("")
+                if is_unstable:
+                    logger.error(f"Path  : {fullpath}:")
+                elif repo["stale_days"]:
+                    logger.warning(f"Path  : {fullpath}:")
+                else:
+                    logger.info(f"Path  : {fullpath}:")
+                if not is_unstable and repo["stale_days"] is None:
+                    logger.info("Status: clean")
+                else:
+                    logger.warning("Status: unstable")
 
                 if repo["uncommitted"]:
                     logger.error("  Uncommitted changes:")
@@ -369,9 +373,8 @@ def main():
                     logger.warning("  Special states:")
                     for state in repo["special_states"]:
                         logger.warning(f"    {state}")
-
-                if not is_unstable and repo["stale_days"] is None:
-                    logger.info("  Status: clean")
+                if repo["stale_days"] is not None:
+                    logger.warning(f"  {repo['stale_days']} days since last commit")
     else:
         if args.summary:
             print("No Git repositories found.")
