@@ -31,11 +31,20 @@ class PyBundler:
         max_file_size (int | None):
             Maximum file size in bytes to include. Files larger than this will be skipped.
             If None, no size limit is applied.
+        include_hidden (bool):
+            Whether to include hidden files and directories (starting with '.').
+            Defaults to False.
         output_lines (list[str]):
             Internal list to accumulate markdown output lines.
     """
 
-    def __init__(self, root: Path, patterns: list[str] | None = None, max_file_size: int | None = None):
+    def __init__(
+        self,
+        root: Path,
+        patterns: list[str] | None = None,
+        max_file_size: int | None = None,
+        include_hidden: bool = False,
+    ):
         """Initialize the PyBundler with root directory and patterns.
 
         Args:
@@ -45,11 +54,39 @@ class PyBundler:
                 List of glob patterns to match files. If None, defaults to ["**/*.*"].
             max_file_size (int | None):
                 Maximum file size in bytes to include. If None, no size limit is applied.
+            include_hidden (bool):
+                Whether to include hidden files and directories. Defaults to False.
         """
         self.root = Path(root)
         self.patterns = patterns or ["**/*.*"]
         self.max_file_size = max_file_size
+        self.include_hidden = include_hidden
         self.output_lines: list[str] = []
+
+    def _is_hidden_path(self, path: Path) -> bool:
+        """Check if a path contains hidden files or directories.
+
+        A path is considered hidden if it or any of its parent directories
+        start with a dot ('.').
+
+        Args:
+            path (Path):
+                The path to check.
+
+        Returns:
+            bool:
+                True if the path contains hidden components, False otherwise.
+        """
+        # Check the file/directory name itself
+        if path.name.startswith('.'):
+            return True
+        
+        # Check all parent directories
+        for parent in path.parents:
+            if parent.name.startswith('.'):
+                return True
+        
+        return False
 
     def add_header(self, title: str, level: int = 2) -> None:
         """Add a markdown header to the output.
@@ -142,6 +179,10 @@ class PyBundler:
         for pat in self.patterns:
             for p in self.root.rglob(pat):
                 if not p.is_file():
+                    continue
+
+                # Skip hidden files/directories unless explicitly included
+                if not self.include_hidden and self._is_hidden_path(p):
                     continue
 
                 # Skip binary files by extension
@@ -261,6 +302,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="Maximum file size in bytes to include (default: no limit)",
     )
     parser.add_argument(
+        "--include-hidden",
+        action="store_true",
+        help="Include hidden files and directories (starting with '.')",
+    )
+    parser.add_argument(
         "--output",
         type=str,
         default="BUNDLE.md",
@@ -284,7 +330,12 @@ def main(argv: list[str] | None = None) -> int:
     root = Path(args.root)
     patterns = [p.strip() for p in args.patterns.split(",") if p.strip()]
 
-    bundler = PyBundler(root, patterns=patterns, max_file_size=args.max_size)
+    bundler = PyBundler(
+        root, 
+        patterns=patterns, 
+        max_file_size=args.max_size,
+        include_hidden=args.include_hidden,
+    )
     out_path = Path(args.output)
 
     print(f"Bundling files from {root} using patterns: {patterns}")
