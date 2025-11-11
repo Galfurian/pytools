@@ -203,42 +203,43 @@ class PyBundler:
         for config_filename in self.config_files:
             config_file = self.root / config_filename
 
-            if config_file.exists():
-                try:
-                    with open(config_file, "r", encoding="utf-8") as f:
-                        current_section = None
-                        patterns_list: list[str] = []
-                        found_old_format = False
-                        
-                        for line in f:
-                            line = line.strip()
-                            if not line or line.startswith("#"):
-                                continue
+            if not config_file.exists():
+                continue
 
-                            # Section headers
-                            if line.endswith(":") and not ":" in line[:-1]:
-                                current_section = line[:-1].lower()
-                                continue
+            try:
+                with open(config_file, "r", encoding="utf-8") as f:
+                    current_section = None
+                    patterns_list: list[str] = []
 
-                            # Parse patterns - list format only
-                            if current_section == "patterns":
-                                if line.startswith("- "):
-                                    pattern = line[2:].strip()
-                                    if pattern:
-                                        patterns_list.append(pattern)
-                            
-                            # When we exit the patterns section, return any collected patterns
-                            elif current_section != "patterns" and patterns_list:
-                                return patterns_list
-                        
-                        # Return patterns if we found any at the end of file
-                        if patterns_list:
+                    for line in f:
+                        line = line.strip()
+                        if not line or line.startswith("#"):
+                            continue
+
+                        # Section headers
+                        if line.endswith(":") and not ":" in line[:-1]:
+                            current_section = line[:-1].lower()
+                            continue
+
+                        # Parse patterns - list format only
+                        if current_section == "patterns":
+                            if line.startswith("- "):
+                                pattern = line[2:].strip()
+                                if pattern:
+                                    patterns_list.append(pattern)
+
+                        # When we exit the patterns section, return any collected patterns
+                        elif current_section != "patterns" and patterns_list:
                             return patterns_list
 
-                except Exception as e:
-                    print(
-                        f"Warning: Could not read patterns from {config_filename} file: {e}"
-                    )
+                    # Return patterns if we found any at the end of file
+                    if patterns_list:
+                        return patterns_list
+
+            except Exception as e:
+                print(
+                    f"Warning: Could not read patterns from {config_filename} file: {e}"
+                )
 
         return None
 
@@ -381,6 +382,52 @@ class PyBundler:
 
         return files, warnings
 
+    def _generate_toc(self, files: list[Path]) -> None:
+        """Generate table of contents for the bundled files.
+
+        Args:
+            files (list[Path]):
+                List of files to include in the TOC.
+        """
+        self.add_header("Table of Contents", level=2)
+
+        # Collect unique entries - individual files with descriptions get their own entries
+        toc_entries = set()
+        individual_files = set()
+
+        for f in files:
+            try:
+                rel = f.relative_to(self.root)
+            except Exception:
+                rel = f.name
+            rel_str = str(rel)
+
+            # Check if this specific file has a description
+            if self.toc_descriptions and self.toc_descriptions.get(rel_str.lower()):
+                individual_files.add(rel_str)
+            else:
+                # For files in subdirectories, use the top-level folder
+                if "/" in rel_str:
+                    top_level = rel_str.split("/")[0]
+                else:
+                    top_level = rel_str
+                toc_entries.add(top_level)
+
+        # Generate TOC entries - individual files first, then grouped folders
+        all_entries = sorted(individual_files) + sorted(
+            toc_entries - set(entry.split("/")[0] for entry in individual_files)
+        )
+
+        for entry in all_entries:
+            description = None
+            if self.toc_descriptions:
+                description = self.toc_descriptions.get(entry.lower())
+
+            if description:
+                self.add_text(f"- **{entry}** - {description}")
+            else:
+                self.add_text(f"- {entry}")
+
     def bundle(
         self,
         output: Path,
@@ -414,44 +461,7 @@ class PyBundler:
 
         # Generate table of contents if requested
         if self.generate_toc and files:
-            self.add_header("Table of Contents", level=2)
-
-            # Collect unique entries - individual files with descriptions get their own entries
-            toc_entries = set()
-            individual_files = set()
-            
-            for f in files:
-                try:
-                    rel = f.relative_to(self.root)
-                except Exception:
-                    rel = f.name
-                rel_str = str(rel)
-
-                # Check if this specific file has a description
-                if self.toc_descriptions and self.toc_descriptions.get(rel_str.lower()):
-                    individual_files.add(rel_str)
-                else:
-                    # For files in subdirectories, use the top-level folder
-                    if "/" in rel_str:
-                        top_level = rel_str.split("/")[0]
-                    else:
-                        top_level = rel_str
-                    toc_entries.add(top_level)
-
-            # Generate TOC entries - individual files first, then grouped folders
-            all_entries = sorted(individual_files) + sorted(toc_entries - set(entry.split("/")[0] for entry in individual_files))
-            
-            for entry in all_entries:
-                description = None
-                if self.toc_descriptions:
-                    description = self.toc_descriptions.get(entry.lower())
-
-                if description:
-                    self.add_text(f"- **{entry}** - {description}")
-                else:
-                    self.add_text(f"- {entry}")
-
-            self.add_text("")
+            self._generate_toc(files)
 
         for f in files:
             try:
@@ -601,9 +611,7 @@ def generate_config(
             "# This file defines default patterns and TOC descriptions for your project\n"
         )
         f.write("# \n")
-        f.write(
-            "# Patterns section: list of glob patterns to include by default\n"
-        )
+        f.write("# Patterns section: list of glob patterns to include by default\n")
         f.write("patterns:\n")
         for pattern in patterns:
             f.write(f"  - {pattern}\n")
