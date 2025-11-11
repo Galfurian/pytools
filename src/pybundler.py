@@ -697,11 +697,14 @@ def main(argv: list[str] | None = None) -> int:
         content = output.read_text(encoding="utf-8")
         line_count = len(content.splitlines())
         word_count = len(content.split())
+        # Rough token estimate: ~4 characters per token
+        token_estimate = len(content) // 4
     except Exception:
         line_count = 0
         word_count = 0
+        token_estimate = 0
 
-    print(f"Created bundle: {output} ({file_size_kb:.2f} KB, {line_count} lines, {word_count} words)")
+    print(f"Created bundle: {output} ({file_size_kb:.2f} KB, {line_count} lines, {word_count} words, ~{token_estimate} tokens)")
     return 0
 
 
