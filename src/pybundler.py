@@ -15,6 +15,302 @@ import json
 from datetime import datetime
 from pathlib import Path
 
+DEFAULT_CONFIG_FILENAME = ".bundler.config"
+
+
+def _is_hidden_path(path: Path) -> bool:
+    """Check if a path contains hidden files or directories.
+
+    A path is considered hidden if it or any of its parent directories
+    start with a dot ('.').
+
+    Args:
+        path (Path):
+            The path to check.
+
+    Returns:
+        bool:
+            True if the path contains hidden components, False otherwise.
+    """
+    # Check the file/directory name itself
+    if path.name.startswith("."):
+        return True
+
+    # Check all parent directories
+    for parent in path.parents:
+        if parent.name.startswith("."):
+            return True
+
+    return False
+
+
+def _collect_files(
+    root: Path,
+    patterns: list[str],
+    include_hidden: bool = False,
+    max_file_size: int | None = None,
+) -> list[Path]:
+    """Collect all files matching the patterns under the root directory.
+
+    Filters out binary files and files exceeding size limits.
+
+    Args:
+        root (Path):
+            The root directory to search for files.
+        patterns (list[str]):
+            List of glob patterns to match files.
+        include_hidden (bool):
+            Whether to include hidden files and directories. Defaults to False.
+        max_file_size (int | None):
+            Maximum file size in bytes to include. If None, no size limit is applied.
+
+    Returns:
+        list[Path]:
+            List of matching file paths, deduplicated and sorted.
+    """
+    files: list[Path] = []
+    if not root.exists():
+        return files
+
+    # Common binary file extensions to skip
+    binary_extensions = {
+        # Python bytecode
+        ".pyc",
+        ".pyo",
+        ".pyd",
+        # Images
+        ".jpg",
+        ".jpeg",
+        ".png",
+        ".gif",
+        ".bmp",
+        ".tiff",
+        ".ico",
+        # Videos
+        ".mp4",
+        ".avi",
+        ".mkv",
+        ".mov",
+        ".wmv",
+        # Audio
+        ".mp3",
+        ".wav",
+        ".flac",
+        ".aac",
+        # Archives
+        ".zip",
+        ".tar",
+        ".gz",
+        ".bz2",
+        ".xz",
+        ".7z",
+        ".rar",
+        # Documents
+        ".pdf",
+        ".doc",
+        ".docx",
+        ".xls",
+        ".xlsx",
+        ".ppt",
+        ".pptx",
+        # Executables/Libraries
+        ".exe",
+        ".dll",
+        ".so",
+        ".dylib",
+        # Databases
+        ".db",
+        ".sqlite",
+        ".sqlite3",
+    }
+
+    for pat in patterns:
+        # Handle directory patterns that end with "/" - convert to "**" to match all files
+        if pat.endswith("/") and "*" not in pat and "?" not in pat:
+            # Convert "player/" to "player/**" to match all files in the directory
+            actual_pat = pat + "**"
+        else:
+            actual_pat = pat
+
+        for p in root.rglob(actual_pat):
+            if not p.is_file():
+                continue
+
+            # Skip hidden files/directories unless explicitly included
+            if not include_hidden and _is_hidden_path(p):
+                continue
+
+            # Skip binary files by extension
+            if p.suffix.lower() in binary_extensions:
+                continue
+
+            # Skip files that are too large (if limit is enabled)
+            if max_file_size is not None:
+                try:
+                    if p.stat().st_size > max_file_size:
+                        continue
+                except OSError:
+                    continue
+
+            files.append(p)
+
+    # Deduplicate and sort by path
+    unique = sorted({p.resolve(): p for p in files}.values(), key=lambda p: str(p))
+    return unique
+
+
+def _is_valid_pattern(root: Path, pattern: str) -> tuple[bool, list[Path]]:
+    """Check if a pattern is valid and return any matching files.
+
+    Args:
+        root (Path):
+            The root directory to check against.
+        pattern (str):
+            The pattern to validate.
+
+    Returns:
+        tuple[bool, list[Path]]:
+            Tuple of (is_valid, files) where is_valid indicates if the pattern is valid
+            and files contains any matching files found.
+    """
+    # Handle directory patterns that end with "/" - convert to "**" for file matching
+    if pattern.endswith("/") and "*" not in pattern and "?" not in pattern:
+        actual_pattern = pattern + "**"
+    else:
+        actual_pattern = pattern
+
+    # Check if pattern matches any files
+    files = _collect_files(
+        root,
+        [actual_pattern],
+        include_hidden=False,
+        max_file_size=None,
+    )
+    if files:
+        return True, files
+
+    # If no files found, check if it's a valid directory path (for patterns ending with /)
+    if pattern.endswith("/"):
+        path_obj = root / pattern.rstrip("/")
+        if path_obj.exists() and path_obj.is_dir():
+            return True, []
+    elif not ("*" in pattern or "?" in pattern):
+        # For non-glob patterns, check if the path exists at all
+        path_obj = root / pattern
+        if path_obj.exists():
+            return True, []
+
+    return False, []
+
+
+def __generate_config(
+    root: Path,
+    patterns: list[str],
+    config_filename: str = DEFAULT_CONFIG_FILENAME,
+) -> int:
+    """Generate a starter bundler configuration file.
+
+    Args:
+        root (Path):
+            Root directory to scan for files.
+        patterns (list[str]):
+            Glob patterns to match files.
+        config_filename (str):
+            Name of the config file to generate.
+
+    Returns:
+        int:
+            Exit code (0 for success).
+    """
+    # Validate patterns individually and collect valid ones
+    valid_patterns = []
+    all_files = set()
+
+    for pattern in patterns:
+        # Check if pattern is valid and get any matching files
+        is_valid, files = _is_valid_pattern(root, pattern)
+        if is_valid:
+            all_files.update(files)
+            valid_patterns.append(pattern)
+        else:
+            print(
+                f"Warning: Pattern '{pattern}' does not match any files or valid paths. Skipping."
+            )
+
+    if not valid_patterns:
+        print("No valid patterns found. Cannot generate config.")
+        return 1
+
+    # Collect TOC entries based on valid pattern types
+    toc_entries = set()
+
+    # Analyze each valid pattern to determine TOC entries
+    for pattern in valid_patterns:
+        # If pattern ends with /** or /*, it's a directory pattern - add directory name
+        if pattern.endswith("/**") or pattern.endswith("/*"):
+            dir_name = pattern.rstrip("/*")
+            if "/" in dir_name:
+                # For nested directories like "player/**", add "player"
+                toc_entries.add(dir_name.split("/")[0])
+            else:
+                # For top-level directories like "journal/**", add "journal"
+                toc_entries.add(dir_name)
+        elif "*" in pattern or "?" in pattern:
+            # Glob pattern - collect what it actually matches and add top-level entries
+            for f in all_files:
+                try:
+                    rel = f.relative_to(root)
+                except Exception:
+                    rel = f.name
+                rel_str = str(rel)
+                if "/" in rel_str:
+                    toc_entries.add(rel_str.split("/")[0])
+                else:
+                    toc_entries.add(rel_str)
+        else:
+            # Specific path - check if it's a file or directory
+            path_obj = root / pattern
+            if path_obj.exists():
+                if path_obj.is_file():
+                    # Specific file
+                    toc_entries.add(pattern)
+                elif path_obj.is_dir():
+                    # Directory path - add directory name without trailing slash
+                    dir_name = pattern.rstrip("/")
+                    if "/" in dir_name:
+                        toc_entries.add(dir_name.split("/")[0])
+                    else:
+                        toc_entries.add(dir_name)
+
+    # Generate the config file
+    config_file = root / config_filename
+
+    with open(config_file, "w", encoding="utf-8") as f:
+        f.write("# Bundler Configuration File\n")
+        f.write(
+            "# This file defines default patterns and TOC descriptions for your project\n"
+        )
+        f.write("# \n")
+        f.write("# Patterns section: list of glob patterns to include by default\n")
+        f.write("patterns:\n")
+        for pattern in valid_patterns:
+            f.write(f"  - {pattern}\n")
+        f.write("# \n")
+        f.write("# TOC section: descriptions for folders/files in table of contents\n")
+        f.write("toc:\n")
+
+        for entry in sorted(toc_entries):
+            f.write(f"  {entry}: \n")
+
+    print(
+        f"Generated starter {config_filename} file with {len(valid_patterns)} patterns and {len(toc_entries)} TOC entries."
+    )
+    print("Edit the file to customize patterns and add descriptions.")
+    print("Then run with --toc to generate bundles with descriptions.")
+    print("Or run without --patterns to use the configured defaults.")
+
+    return 0
+
 
 class PyBundler:
     """Bundle files for LLM ingestion into a single markdown file.
@@ -76,7 +372,7 @@ class PyBundler:
                 List of config file paths to load. If None, uses default .bundler.config.
         """
         self.root = Path(root)
-        self.config_files = config_files or [".bundler.config"]
+        self.config_files = config_files or [DEFAULT_CONFIG_FILENAME]
 
         # Load patterns from config if none provided
         if patterns is None:
@@ -92,39 +388,11 @@ class PyBundler:
         self.toc_descriptions = self._load_toc_descriptions()
         self.output_lines: list[str] = []
 
-    def _is_hidden_path(self, path: Path) -> bool:
-        """Check if a path contains hidden files or directories.
-
-        A path is considered hidden if it or any of its parent directories
-        start with a dot ('.').
-
-        Args:
-            path (Path):
-                The path to check.
-
-        Returns:
-            bool:
-                True if the path contains hidden components, False otherwise.
-        """
-        # Check the file/directory name itself
-        if path.name.startswith("."):
-            return True
-
-        # Check all parent directories
-        for parent in path.parents:
-            if parent.name.startswith("."):
-                return True
-
-        return False
-
     def _load_toc_descriptions(self) -> dict[str, str]:
         """Load TOC descriptions from config files.
 
-        Supports both old .bundler.toc format and new .bundler.config format.
-        Iterates through config files in order, with later files overriding earlier ones.
-        The .bundler.config format supports:
-        - patterns: comma-separated default patterns
-        - toc: section with name: description entries
+        Supports the .bundler.config format with toc section containing
+        name: description entries.
 
         Returns:
             dict[str, str]:
@@ -135,59 +403,33 @@ class PyBundler:
         for config_filename in self.config_files:
             config_file = self.root / config_filename
 
-            # Try new .bundler.config format first
-            if config_file.exists():
-                try:
-                    with open(config_file, "r", encoding="utf-8") as f:
-                        current_section = None
-                        for line_num, line in enumerate(f, 1):
-                            line = line.strip()
-                            if not line or line.startswith("#"):
-                                continue
+            if not config_file.exists():
+                continue
 
-                            # Section headers
-                            if line.endswith(":") and not ":" in line[:-1]:
-                                current_section = line[:-1].lower()
-                                continue
+            try:
+                with open(config_file, "r", encoding="utf-8") as f:
+                    current_section = None
+                    for line in f:
+                        line = line.strip()
+                        if not line or line.startswith("#"):
+                            continue
 
-                            # Parse key-value pairs
-                            if ":" in line and current_section == "toc":
-                                key, description = line.split(":", 1)
-                                key = key.strip()
-                                description = description.strip()
+                        # Section headers
+                        if line.endswith(":") and not ":" in line[:-1]:
+                            current_section = line[:-1].lower()
+                            continue
 
-                                if key and description:
-                                    descriptions[key.lower()] = description
+                        # Parse key-value pairs
+                        if ":" in line and current_section == "toc":
+                            key, description = line.split(":", 1)
+                            key = key.strip()
+                            description = description.strip()
 
-                except Exception as e:
-                    print(f"Warning: Could not read {config_filename} file: {e}")
+                            if key and description:
+                                descriptions[key.lower()] = description
 
-            # Also check for old .bundler.toc format (only for default filename)
-            elif config_filename == ".bundler.config":
-                toc_file = self.root / ".bundler.toc"
-                if toc_file.exists():
-                    try:
-                        with open(toc_file, "r", encoding="utf-8") as f:
-                            for line_num, line in enumerate(f, 1):
-                                line = line.strip()
-                                if not line or line.startswith("#"):
-                                    continue
-
-                                if ":" not in line:
-                                    print(
-                                        f"Warning: Invalid line {line_num} in .bundler.toc: {line}"
-                                    )
-                                    continue
-
-                                key, description = line.split(":", 1)
-                                key = key.strip()
-                                description = description.strip()
-
-                                if key and description:
-                                    descriptions[key.lower()] = description
-
-                    except Exception as e:
-                        print(f"Warning: Could not read .bundler.toc file: {e}")
+            except Exception as e:
+                print(f"Warning: Could not read {config_filename} file: {e}")
 
         return descriptions
 
@@ -266,98 +508,6 @@ class PyBundler:
         """
         self.output_lines.append(text + "\n")
 
-    def collect_files(self) -> list[Path]:
-        """Collect all files matching the patterns under the root directory.
-
-        Filters out binary files and files exceeding size limits.
-
-        Returns:
-            list[Path]:
-                List of matching file paths, deduplicated and sorted.
-        """
-        files: list[Path] = []
-        if not self.root.exists():
-            return files
-
-        # Common binary file extensions to skip
-        binary_extensions = {
-            # Python bytecode
-            ".pyc",
-            ".pyo",
-            ".pyd",
-            # Images
-            ".jpg",
-            ".jpeg",
-            ".png",
-            ".gif",
-            ".bmp",
-            ".tiff",
-            ".ico",
-            # Videos
-            ".mp4",
-            ".avi",
-            ".mkv",
-            ".mov",
-            ".wmv",
-            # Audio
-            ".mp3",
-            ".wav",
-            ".flac",
-            ".aac",
-            # Archives
-            ".zip",
-            ".tar",
-            ".gz",
-            ".bz2",
-            ".xz",
-            ".7z",
-            ".rar",
-            # Documents
-            ".pdf",
-            ".doc",
-            ".docx",
-            ".xls",
-            ".xlsx",
-            ".ppt",
-            ".pptx",
-            # Executables/Libraries
-            ".exe",
-            ".dll",
-            ".so",
-            ".dylib",
-            # Databases
-            ".db",
-            ".sqlite",
-            ".sqlite3",
-        }
-
-        for pat in self.patterns:
-            for p in self.root.rglob(pat):
-                if not p.is_file():
-                    continue
-
-                # Skip hidden files/directories unless explicitly included
-                if not self.include_hidden and self._is_hidden_path(p):
-                    continue
-
-                # Skip binary files by extension
-                if p.suffix.lower() in binary_extensions:
-                    continue
-
-                # Skip files that are too large (if limit is enabled)
-                if self.max_file_size is not None:
-                    try:
-                        if p.stat().st_size > self.max_file_size:
-                            continue
-                    except OSError:
-                        continue
-
-                files.append(p)
-
-        # Deduplicate and sort by path
-        unique = sorted({p.resolve(): p for p in files}.values(), key=lambda p: str(p))
-        return unique
-
     def collect_files_with_warnings(self) -> tuple[list[Path], list[str]]:
         """Collect all files matching the patterns and return warnings for large files.
 
@@ -366,7 +516,9 @@ class PyBundler:
                 Tuple of (files, warnings) where warnings contains messages for files
                 exceeding the warn_size threshold.
         """
-        files = self.collect_files()
+        files = _collect_files(
+            self.root, self.patterns, self.include_hidden, self.max_file_size
+        )
         warnings = []
 
         for f in files:
@@ -451,7 +603,9 @@ class PyBundler:
             f"*Generated: {datetime.now().isoformat(sep=' ', timespec='seconds')}*"
         )
 
-        files = self.collect_files()
+        files = _collect_files(
+            self.root, self.patterns, self.include_hidden, self.max_file_size
+        )
 
         if not files:
             self.add_text("No files found. Nothing to bundle.")
@@ -567,92 +721,6 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     return parser.parse_args(argv)
 
 
-def generate_config(
-    root: Path, patterns: list[str], config_filename: str = ".bundler.config"
-) -> int:
-    """Generate a starter bundler configuration file.
-
-    Args:
-        root (Path):
-            Root directory to scan for files.
-        patterns (list[str]):
-            Glob patterns to match files.
-        config_filename (str):
-            Name of the config file to generate. Defaults to ".bundler.config".
-
-    Returns:
-        int:
-            Exit code (0 for success).
-    """
-    # Create a temporary bundler to collect files
-    temp_bundler = PyBundler(root, patterns=patterns, include_hidden=False)
-    files = temp_bundler.collect_files()
-
-    if not files:
-        print("No files found matching the patterns. Cannot generate config.")
-        return 1
-
-    # Collect TOC entries based on pattern types
-    toc_entries = set()
-
-    # Analyze each pattern to determine TOC entries
-    for pattern in patterns:
-        # If pattern ends with /** or /*, it's a directory pattern - add directory name
-        if pattern.endswith("/**") or pattern.endswith("/*"):
-            dir_name = pattern.rstrip("/*")
-            if "/" in dir_name:
-                # For nested directories like "player/**", add "player"
-                toc_entries.add(dir_name.split("/")[0])
-            else:
-                # For top-level directories like "journal/**", add "journal"
-                toc_entries.add(dir_name)
-        elif "*" in pattern or "?" in pattern:
-            # Glob pattern - collect what it actually matches and add top-level entries
-            for f in files:
-                try:
-                    rel = f.relative_to(root)
-                except Exception:
-                    rel = f.name
-                rel_str = str(rel)
-                if "/" in rel_str:
-                    toc_entries.add(rel_str.split("/")[0])
-                else:
-                    toc_entries.add(rel_str)
-        else:
-            # Specific file pattern - add it directly if it exists
-            if (root / pattern).exists():
-                toc_entries.add(pattern)
-
-    # Generate the config file
-    config_file = root / config_filename
-
-    with open(config_file, "w", encoding="utf-8") as f:
-        f.write("# Bundler Configuration File\n")
-        f.write(
-            "# This file defines default patterns and TOC descriptions for your project\n"
-        )
-        f.write("# \n")
-        f.write("# Patterns section: list of glob patterns to include by default\n")
-        f.write("patterns:\n")
-        for pattern in patterns:
-            f.write(f"  - {pattern}\n")
-        f.write("# \n")
-        f.write("# TOC section: descriptions for folders/files in table of contents\n")
-        f.write("toc:\n")
-
-        for entry in sorted(toc_entries):
-            f.write(f"  {entry}: \n")
-
-    print(
-        f"Generated starter {config_filename} file with {len(toc_entries)} TOC entries."
-    )
-    print("Edit the file to customize patterns and add descriptions.")
-    print("Then run with --toc to generate bundles with descriptions.")
-    print("Or run without --patterns to use the configured defaults.")
-
-    return 0
-
-
 def main(argv: list[str] | None = None) -> int:
     """Main entry point for the pybundler command-line tool.
 
@@ -678,7 +746,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.generate_config:
         # For config generation, we need actual patterns
         actual_patterns = patterns if patterns else ["**/*.*"]
-        return generate_config(root, actual_patterns, args.generate_config)
+        return __generate_config(root, actual_patterns, args.generate_config)
 
     bundler = PyBundler(
         root,
