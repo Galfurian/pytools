@@ -11,10 +11,10 @@ result is intended for copy/paste into LLM/web-UI uploads.
 from __future__ import annotations
 
 import argparse
-import json
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
+import fnmatch
 
 DEFAULT_CONFIG_FILENAME = ".bundler.config"
 
@@ -96,14 +96,16 @@ class Config:
         try:
             # Ensure the directory exists
             config_file.parent.mkdir(parents=True, exist_ok=True)
-            
+
             with open(config_file, "w", encoding="utf-8") as f:
                 f.write("# Bundler Configuration File\n")
                 f.write(
                     "# This file defines default patterns and TOC descriptions for your project\n"
                 )
                 f.write("# \n")
-                f.write("# Patterns section: list of glob patterns to include by default\n")
+                f.write(
+                    "# Patterns section: list of glob patterns to include by default\n"
+                )
                 f.write("patterns:\n")
                 for pattern in self.patterns:
                     f.write(f"  - {pattern}\n")
@@ -150,10 +152,11 @@ def _collect_files(
     patterns: list[str],
     include_hidden: bool = False,
     max_file_size: int | None = None,
+    exclude_patterns: list[str] | None = None,
 ) -> list[Path]:
     """Collect all files matching the patterns under the root directory.
 
-    Filters out binary files and files exceeding size limits.
+    Filters out binary files, files exceeding size limits, and excluded patterns.
 
     Args:
         root (Path):
@@ -164,6 +167,8 @@ def _collect_files(
             Whether to include hidden files and directories. Defaults to False.
         max_file_size (int | None):
             Maximum file size in bytes to include. If None, no size limit is applied.
+        exclude_patterns (list[str] | None):
+            List of glob patterns to exclude. Applied after inclusion patterns.
 
     Returns:
         list[Path]:
@@ -261,6 +266,33 @@ def _collect_files(
                 except OSError:
                     continue
 
+            # Skip files matching exclude patterns
+            if exclude_patterns:
+                excluded = False
+                try:
+                    rel_path = p.relative_to(root)
+                except ValueError:
+                    rel_path = p.name
+
+                rel_str = str(rel_path)
+
+                for exclude_pat in exclude_patterns:
+                    # Handle directory exclusions (patterns ending with / or containing / without globs)
+                    if exclude_pat.endswith("/") or ("/" in exclude_pat and not ("*" in exclude_pat or "?" in exclude_pat)):
+                        # Directory exclusion - exclude anything under this path
+                        exclude_path = exclude_pat.rstrip("/")
+                        if rel_str.startswith(exclude_path + "/") or rel_str == exclude_path:
+                            excluded = True
+                            break
+                    else:
+                        # File or glob pattern - use fnmatch on both full path and filename
+                        if fnmatch.fnmatch(rel_str, exclude_pat) or fnmatch.fnmatch(p.name, exclude_pat):
+                            excluded = True
+                            break
+
+                if excluded:
+                    continue
+
             files.append(p)
 
     # Deduplicate and sort by path
@@ -268,7 +300,9 @@ def _collect_files(
     return unique
 
 
-def _is_valid_pattern(root: Path, pattern: str) -> tuple[bool, list[Path]]:
+def _is_valid_pattern(
+    root: Path, pattern: str, exclude_patterns: list[str] | None = None
+) -> tuple[bool, list[Path]]:
     """Check if a pattern is valid and return any matching files.
 
     Args:
@@ -294,6 +328,7 @@ def _is_valid_pattern(root: Path, pattern: str) -> tuple[bool, list[Path]]:
         [actual_pattern],
         include_hidden=False,
         max_file_size=None,
+        exclude_patterns=exclude_patterns,
     )
     if files:
         return True, files
@@ -312,6 +347,7 @@ def _generate_config(
     root: Path,
     patterns: list[str],
     config_filename: str = DEFAULT_CONFIG_FILENAME,
+    exclude_patterns: list[str] | None = None,
 ) -> int:
     """Generate a starter bundler configuration file.
 
@@ -333,7 +369,7 @@ def _generate_config(
 
     for pattern in patterns:
         # Check if pattern is valid and get any matching files
-        is_valid, files = _is_valid_pattern(root, pattern)
+        is_valid, files = _is_valid_pattern(root, pattern, exclude_patterns)
         if is_valid:
             all_files.update(files)
             valid_patterns.append(pattern)
@@ -441,6 +477,7 @@ class PyBundler:
         warn_size: int = 50 * 1024,  # 50KB default
         generate_toc: bool = False,
         config_files: list[str] | None = None,
+        exclude_patterns: list[str] | None = None,
     ):
         """Initialize the PyBundler with root directory and patterns.
 
@@ -460,6 +497,8 @@ class PyBundler:
                 Whether to generate a table of contents. Defaults to False.
             config_files (list[str] | None):
                 List of config file paths to load. If None, uses default .bundler.config.
+            exclude_patterns (list[str] | None):
+                List of glob patterns to exclude from bundling. Applied after inclusion patterns.
         """
         self.root = Path(root)
         self.config_files = config_files or [DEFAULT_CONFIG_FILENAME]
@@ -478,6 +517,7 @@ class PyBundler:
         self.warn_size = warn_size
         self.generate_toc = generate_toc
         self.toc_descriptions = config.toc_descriptions
+        self.exclude_patterns = exclude_patterns
         self.output_lines: list[str] = []
 
     def add_header(self, title: str, level: int = 2) -> None:
@@ -512,7 +552,11 @@ class PyBundler:
                 exceeding the warn_size threshold.
         """
         files = _collect_files(
-            self.root, self.patterns, self.include_hidden, self.max_file_size
+            self.root,
+            self.patterns,
+            self.include_hidden,
+            self.max_file_size,
+            self.exclude_patterns,
         )
         warnings = []
 
@@ -660,7 +704,11 @@ class PyBundler:
         )
 
         files = _collect_files(
-            self.root, self.patterns, self.include_hidden, self.max_file_size
+            self.root,
+            self.patterns,
+            self.include_hidden,
+            self.max_file_size,
+            self.exclude_patterns,
         )
 
         if not files:
@@ -793,6 +841,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="Comma-separated glob patterns to include (default: '**/*.*')",
     )
     parser.add_argument(
+        "--exclude",
+        type=str,
+        help="Comma-separated glob patterns to exclude (applied after inclusion patterns)",
+    )
+    parser.add_argument(
         "--max-size",
         type=int,
         default=None,
@@ -857,11 +910,18 @@ def main(argv: list[str] | None = None) -> int:
     else:
         patterns = [p.strip() for p in patterns_arg.split(",") if p.strip()]
 
+    # Parse exclude patterns
+    exclude_patterns = None
+    if hasattr(args, "exclude") and args.exclude:
+        exclude_patterns = [p.strip() for p in args.exclude.split(",") if p.strip()]
+
     # Handle config generation
     if args.generate_config:
         # For config generation, we need actual patterns
         actual_patterns = patterns if patterns else ["**/*.*"]
-        return _generate_config(root, actual_patterns, args.generate_config)
+        return _generate_config(
+            root, actual_patterns, args.generate_config, exclude_patterns
+        )
 
     bundler = PyBundler(
         root,
@@ -871,6 +931,7 @@ def main(argv: list[str] | None = None) -> int:
         warn_size=args.warn_size,
         generate_toc=args.toc,
         config_files=args.config,
+        exclude_patterns=exclude_patterns,
     )
     out_path = Path(args.output)
 
