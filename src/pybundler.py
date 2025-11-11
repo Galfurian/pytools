@@ -54,6 +54,7 @@ class PyBundler:
         include_hidden: bool = False,
         warn_size: int = 50 * 1024,  # 50KB default
         generate_toc: bool = False,
+        config_files: list[str] | None = None,
     ):
         """Initialize the PyBundler with root directory and patterns.
 
@@ -61,7 +62,8 @@ class PyBundler:
             root (Path):
                 The root directory to search for files.
             patterns (list[str] | None):
-                List of glob patterns to match files. If None, defaults to ["**/*.*"].
+                List of glob patterns to match files. If None, loads from config files
+                or defaults to ["**/*.*"].
             max_file_size (int | None):
                 Maximum file size in bytes to include. If None, no size limit is applied.
             include_hidden (bool):
@@ -70,9 +72,19 @@ class PyBundler:
                 File size threshold in bytes for warnings. Defaults to 50KB.
             generate_toc (bool):
                 Whether to generate a table of contents. Defaults to False.
+            config_files (list[str] | None):
+                List of config file paths to load. If None, uses default .bundler.config.
         """
         self.root = Path(root)
-        self.patterns = patterns or ["**/*.*"]
+        self.config_files = config_files or [".bundler.config"]
+
+        # Load patterns from config if none provided
+        if patterns is None:
+            config_patterns = self._load_config_patterns()
+            self.patterns = config_patterns if config_patterns else ["**/*.*"]
+        else:
+            self.patterns = patterns
+
         self.max_file_size = max_file_size
         self.include_hidden = include_hidden
         self.warn_size = warn_size
@@ -106,41 +118,124 @@ class PyBundler:
         return False
 
     def _load_toc_descriptions(self) -> dict[str, str]:
-        """Load TOC descriptions from .bundler.toc file if it exists.
+        """Load TOC descriptions from config files.
 
-        The .bundler.toc file should contain lines in the format:
-        filename_or_folder: Description of what this contains
+        Supports both old .bundler.toc format and new .bundler.config format.
+        Iterates through config files in order, with later files overriding earlier ones.
+        The .bundler.config format supports:
+        - patterns: comma-separated default patterns
+        - toc: section with name: description entries
 
         Returns:
             dict[str, str]:
                 Mapping of filenames/folders to their descriptions.
         """
-        toc_file = self.root / ".bundler.toc"
         descriptions = {}
-        
-        if toc_file.exists():
-            try:
-                with open(toc_file, 'r', encoding='utf-8') as f:
-                    for line_num, line in enumerate(f, 1):
-                        line = line.strip()
-                        if not line or line.startswith('#'):
-                            continue
-                        
-                        if ':' not in line:
-                            print(f"Warning: Invalid line {line_num} in .bundler.toc: {line}")
-                            continue
-                        
-                        key, description = line.split(':', 1)
-                        key = key.strip()
-                        description = description.strip()
-                        
-                        if key and description:
-                            descriptions[key.lower()] = description
-                            
-            except Exception as e:
-                print(f"Warning: Could not read .bundler.toc file: {e}")
-        
+
+        for config_filename in self.config_files:
+            config_file = self.root / config_filename
+
+            # Try new .bundler.config format first
+            if config_file.exists():
+                try:
+                    with open(config_file, "r", encoding="utf-8") as f:
+                        current_section = None
+                        for line_num, line in enumerate(f, 1):
+                            line = line.strip()
+                            if not line or line.startswith("#"):
+                                continue
+
+                            # Section headers
+                            if line.endswith(":") and not ":" in line[:-1]:
+                                current_section = line[:-1].lower()
+                                continue
+
+                            # Parse key-value pairs
+                            if ":" in line and current_section == "toc":
+                                key, description = line.split(":", 1)
+                                key = key.strip()
+                                description = description.strip()
+
+                                if key and description:
+                                    descriptions[key.lower()] = description
+
+                except Exception as e:
+                    print(f"Warning: Could not read {config_filename} file: {e}")
+
+            # Also check for old .bundler.toc format (only for default filename)
+            elif config_filename == ".bundler.config":
+                toc_file = self.root / ".bundler.toc"
+                if toc_file.exists():
+                    try:
+                        with open(toc_file, "r", encoding="utf-8") as f:
+                            for line_num, line in enumerate(f, 1):
+                                line = line.strip()
+                                if not line or line.startswith("#"):
+                                    continue
+
+                                if ":" not in line:
+                                    print(
+                                        f"Warning: Invalid line {line_num} in .bundler.toc: {line}"
+                                    )
+                                    continue
+
+                                key, description = line.split(":", 1)
+                                key = key.strip()
+                                description = description.strip()
+
+                                if key and description:
+                                    descriptions[key.lower()] = description
+
+                    except Exception as e:
+                        print(f"Warning: Could not read .bundler.toc file: {e}")
+
         return descriptions
+
+    def _load_config_patterns(self) -> list[str] | None:
+        """Load default patterns from config files.
+
+        Iterates through config files in order, with later files overriding earlier ones.
+
+        Returns:
+            list[str] | None:
+                List of default patterns, or None if not found.
+        """
+        for config_filename in self.config_files:
+            config_file = self.root / config_filename
+
+            if config_file.exists():
+                try:
+                    with open(config_file, "r", encoding="utf-8") as f:
+                        current_section = None
+                        for line in f:
+                            line = line.strip()
+                            if not line or line.startswith("#"):
+                                continue
+
+                            # Section headers
+                            if line.endswith(":") and not ":" in line[:-1]:
+                                current_section = line[:-1].lower()
+                                continue
+
+                            # Parse patterns
+                            if ":" in line and current_section == "patterns":
+                                key, value = line.split(":", 1)
+                                key = key.strip().lower()
+                                if key == "patterns":
+                                    patterns_str = value.strip()
+                                    if patterns_str:
+                                        return [
+                                            p.strip()
+                                            for p in patterns_str.split(",")
+                                            if p.strip()
+                                        ]
+
+                except Exception as e:
+                    print(
+                        f"Warning: Could not read patterns from {config_filename} file: {e}"
+                    )
+
+        return None
 
     def add_header(self, title: str, level: int = 2) -> None:
         """Add a markdown header to the output.
@@ -315,7 +410,7 @@ class PyBundler:
         # Generate table of contents if requested
         if self.generate_toc and files:
             self.add_header("Table of Contents", level=2)
-            
+
             # Collect unique top-level entries with descriptions
             toc_entries = set()
             for f in files:
@@ -324,26 +419,26 @@ class PyBundler:
                 except Exception:
                     rel = f.name
                 rel_str = str(rel)
-                
+
                 # For files in subdirectories, use the top-level folder
-                if '/' in rel_str:
-                    top_level = rel_str.split('/')[0]
+                if "/" in rel_str:
+                    top_level = rel_str.split("/")[0]
                 else:
                     top_level = rel_str
-                
+
                 toc_entries.add(top_level)
-            
+
             # Generate TOC entries
             for entry in sorted(toc_entries):
                 description = None
                 if self.toc_descriptions:
                     description = self.toc_descriptions.get(entry.lower())
-                
+
                 if description:
                     self.add_text(f"- **{entry}** - {description}")
                 else:
                     self.add_text(f"- {entry}")
-            
+
             self.add_text("")
 
         for f in files:
@@ -429,9 +524,17 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="Generate a table of contents at the top of the bundle",
     )
     parser.add_argument(
-        "--generate-toc-config",
-        action="store_true",
-        help="Generate a starter .bundler.toc file with all folders/files and empty descriptions",
+        "--generate-config",
+        type=str,
+        nargs="?",
+        const=".bundler.config",
+        help="Generate a starter bundler configuration file (default: .bundler.config)",
+    )
+    parser.add_argument(
+        "--config",
+        type=str,
+        action="append",
+        help="Configuration file(s) to use (can be specified multiple times). If not specified, uses .bundler.config",
     )
     parser.add_argument(
         "--output",
@@ -442,14 +545,18 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     return parser.parse_args(argv)
 
 
-def generate_toc_config(root: Path, patterns: list[str]) -> int:
-    """Generate a starter .bundler.toc configuration file.
+def generate_config(
+    root: Path, patterns: list[str], config_filename: str = ".bundler.config"
+) -> int:
+    """Generate a starter bundler configuration file.
 
     Args:
         root (Path):
             Root directory to scan for files.
         patterns (list[str]):
             Glob patterns to match files.
+        config_filename (str):
+            Name of the config file to generate. Defaults to ".bundler.config".
 
     Returns:
         int:
@@ -458,11 +565,11 @@ def generate_toc_config(root: Path, patterns: list[str]) -> int:
     # Create a temporary bundler to collect files
     temp_bundler = PyBundler(root, patterns=patterns, include_hidden=False)
     files = temp_bundler.collect_files()
-    
+
     if not files:
-        print("No files found matching the patterns. Cannot generate TOC config.")
+        print("No files found matching the patterns. Cannot generate config.")
         return 1
-    
+
     # Collect unique top-level entries
     toc_entries = set()
     for f in files:
@@ -471,34 +578,43 @@ def generate_toc_config(root: Path, patterns: list[str]) -> int:
         except Exception:
             rel = f.name
         rel_str = str(rel)
-        
+
         # Use top-level folder for files in subdirectories
-        if '/' in rel_str:
-            top_level = rel_str.split('/')[0]
+        if "/" in rel_str:
+            top_level = rel_str.split("/")[0]
         else:
             top_level = rel_str
-        
+
         toc_entries.add(top_level)
-    
-    # Generate the .bundler.toc file
-    toc_file = root / ".bundler.toc"
-    
-    with open(toc_file, 'w', encoding='utf-8') as f:
-        f.write("# Bundler Table of Contents Configuration\n")
-        f.write("# Format: name: Description of what this folder/file contains\n")
-        f.write("# Lines starting with # are comments and ignored\n")
+
+    # Generate the config file
+    config_file = root / config_filename
+
+    with open(config_file, "w", encoding="utf-8") as f:
+        f.write("# Bundler Configuration File\n")
+        f.write(
+            "# This file defines default patterns and TOC descriptions for your project\n"
+        )
         f.write("# \n")
-        f.write("# This file helps generate descriptive table of contents when using --toc\n")
-        f.write("# Edit the descriptions below to customize your TOC entries\n")
-        f.write("\n")
-        
+        f.write(
+            "# Patterns section: comma-separated glob patterns to include by default\n"
+        )
+        f.write("patterns:\n")
+        f.write(f"  patterns: {', '.join(patterns)}\n")
+        f.write("# \n")
+        f.write("# TOC section: descriptions for folders/files in table of contents\n")
+        f.write("toc:\n")
+
         for entry in sorted(toc_entries):
-            f.write(f"{entry}: \n")
-    
-    print(f"Generated starter .bundler.toc file with {len(toc_entries)} entries.")
-    print("Edit the file to add descriptions for each folder/file.")
-    print("Then run with --toc to generate a bundle with descriptions.")
-    
+            f.write(f"  {entry}: \n")
+
+    print(
+        f"Generated starter {config_filename} file with {len(toc_entries)} TOC entries."
+    )
+    print("Edit the file to customize patterns and add descriptions.")
+    print("Then run with --toc to generate bundles with descriptions.")
+    print("Or run without --patterns to use the configured defaults.")
+
     return 0
 
 
@@ -515,11 +631,19 @@ def main(argv: list[str] | None = None) -> int:
     """
     args = parse_args(argv)
     root = Path(args.root)
-    patterns = [p.strip() for p in args.patterns.split(",") if p.strip()]
 
-    # Handle TOC config generation
-    if args.generate_toc_config:
-        return generate_toc_config(root, patterns)
+    # Parse patterns - use None if default was used (to allow config loading)
+    patterns_arg = args.patterns
+    if patterns_arg == "**/*.*":  # This is the default
+        patterns = None  # Will load from config or use default
+    else:
+        patterns = [p.strip() for p in patterns_arg.split(",") if p.strip()]
+
+    # Handle config generation
+    if args.generate_config:
+        # For config generation, we need actual patterns
+        actual_patterns = patterns if patterns else ["**/*.*"]
+        return generate_config(root, actual_patterns, args.generate_config)
 
     bundler = PyBundler(
         root,
@@ -528,10 +652,11 @@ def main(argv: list[str] | None = None) -> int:
         include_hidden=args.include_hidden,
         warn_size=args.warn_size,
         generate_toc=args.toc,
+        config_files=args.config,
     )
     out_path = Path(args.output)
 
-    print(f"Bundling files from {root} using patterns: {patterns}")
+    print(f"Bundling files from {root} using patterns: {bundler.patterns}")
 
     # Collect files and check for size warnings
     _, warnings = bundler.collect_files_with_warnings()
