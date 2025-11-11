@@ -121,6 +121,36 @@ class Config:
             raise RuntimeError(f"Failed to save config file {config_file}: {e}")
 
 
+def _is_binary_file(file_path: Path) -> bool:
+    """Detect if a file is binary by examining its content.
+
+    Uses a fast byte-level check to determine if the file contains non-text characters.
+    This approach is more efficient than extension-based detection and handles edge cases
+    where files have unusual extensions or text files are misclassified.
+
+    Args:
+        file_path (Path): Path to the file to check.
+
+    Returns:
+        bool: True if the file appears to be binary, False if it appears to be text.
+    """
+    try:
+        # Read first 1024 bytes to check file type
+        with open(file_path, 'rb') as f:
+            sample = f.read(1024)
+        
+        # Fast binary detection: check if any bytes are not text characters
+        # Text characters include: TAB, LF, CR, ESC, and printable ASCII range
+        textchars = bytearray({7,8,9,10,12,13,27} | set(range(0x20, 0x100)) - {0x7f})
+        is_binary = bool(sample.translate(None, textchars))
+        
+        return is_binary
+            
+    except (OSError, IOError):
+        # If we can't read the file, assume it's binary to be safe
+        return True
+
+
 def _is_hidden_path(path: Path) -> bool:
     """Check if a path contains hidden files or directories.
 
@@ -178,58 +208,6 @@ def _collect_files(
     if not root.exists():
         return files
 
-    # Common binary file extensions to skip
-    binary_extensions = {
-        # Python bytecode
-        ".pyc",
-        ".pyo",
-        ".pyd",
-        # Images
-        ".jpg",
-        ".jpeg",
-        ".png",
-        ".gif",
-        ".bmp",
-        ".tiff",
-        ".ico",
-        # Videos
-        ".mp4",
-        ".avi",
-        ".mkv",
-        ".mov",
-        ".wmv",
-        # Audio
-        ".mp3",
-        ".wav",
-        ".flac",
-        ".aac",
-        # Archives
-        ".zip",
-        ".tar",
-        ".gz",
-        ".bz2",
-        ".xz",
-        ".7z",
-        ".rar",
-        # Documents
-        ".pdf",
-        ".doc",
-        ".docx",
-        ".xls",
-        ".xlsx",
-        ".ppt",
-        ".pptx",
-        # Executables/Libraries
-        ".exe",
-        ".dll",
-        ".so",
-        ".dylib",
-        # Databases
-        ".db",
-        ".sqlite",
-        ".sqlite3",
-    }
-
     for pat in patterns:
         # Handle directory patterns - convert to "**" to match all files
         if pat.endswith("/") and "*" not in pat and "?" not in pat:
@@ -254,8 +232,8 @@ def _collect_files(
             if not include_hidden and _is_hidden_path(p):
                 continue
 
-            # Skip binary files by extension
-            if p.suffix.lower() in binary_extensions:
+            # Skip binary files by content analysis
+            if _is_binary_file(p):
                 continue
 
             # Skip files that are too large (if limit is enabled)
