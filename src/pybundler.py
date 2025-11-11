@@ -523,6 +523,54 @@ class PyBundler:
 
         return files, warnings
 
+    def _group_files_by_directory(
+        self, files: list[Path]
+    ) -> dict[str | None, list[Path]]:
+        """Group files by directory patterns from self.patterns.
+
+        Returns a dict where keys are directory paths (or None for ungrouped files)
+        and values are lists of files under that directory.
+        """
+        # Identify directory patterns
+        directory_patterns = set()
+        for pattern in self.patterns:
+            # Check if pattern represents a directory
+            if "*" not in pattern and "?" not in pattern:
+                path_obj = self.root / pattern
+                if path_obj.exists() and path_obj.is_dir():
+                    # Normalize to include trailing slash
+                    dir_pattern = pattern.rstrip("/") + "/"
+                    directory_patterns.add(dir_pattern)
+            elif pattern.endswith("/") and "*" not in pattern and "?" not in pattern:
+                directory_patterns.add(pattern)
+
+        # Group files by matching directory patterns
+        grouped_files: dict[str | None, list[Path]] = {None: []}
+
+        for file_path in files:
+            try:
+                rel_path = file_path.relative_to(self.root)
+            except Exception:
+                rel_path = file_path.name
+
+            rel_str = str(rel_path)
+
+            # Check if this file belongs to any directory pattern
+            grouped = False
+            for dir_pattern in directory_patterns:
+                dir_path = dir_pattern.rstrip("/")
+                if rel_str.startswith(dir_path + "/") or rel_str == dir_path:
+                    if dir_pattern not in grouped_files:
+                        grouped_files[dir_pattern] = []
+                    grouped_files[dir_pattern].append(file_path)
+                    grouped = True
+                    break
+
+            if not grouped:
+                grouped_files[None].append(file_path)
+
+        return grouped_files
+
     def _generate_toc(self, files: list[Path]) -> None:
         """Generate table of contents for the bundled files.
 
@@ -606,7 +654,60 @@ class PyBundler:
         if self.generate_toc and files:
             self._generate_toc(files)
 
-        for f in files:
+        # Group files by directory for hierarchical output
+        grouped_files = self._group_files_by_directory(files)
+
+        # Process grouped files (directory headers)
+        for dir_pattern, dir_files in grouped_files.items():
+            if dir_pattern is None:
+                continue  # Handle ungrouped files separately
+
+            if not dir_files:
+                continue
+
+            # Calculate directory statistics
+            total_size = sum(f.stat().st_size for f in dir_files if f.exists())
+            dir_name = dir_pattern.rstrip("/")
+
+            # Create directory header
+            self.add_header(
+                f"Folder: `{dir_name}/` (Files: {len(dir_files)}, Size: {total_size:,} bytes)",
+                level=2,
+            )
+
+            # Process files in this directory
+            for f in sorted(dir_files):
+                try:
+                    rel = f.relative_to(self.root)
+                except Exception:
+                    rel = f.name
+
+                rel_str = str(rel)
+                # Get file size
+                try:
+                    file_size = f.stat().st_size
+                except Exception:
+                    file_size = 0
+
+                # Attempt to read file
+                try:
+                    content = f.read_text(encoding="utf-8")
+                except Exception as exc:
+                    self.add_header(f"File: `{rel_str}`", level=3)
+                    self.add_text(f"*Error reading file: {exc}*")
+                    continue
+
+                # Choose fenced block language by suffix
+                suffix = f.suffix.lower().lstrip(".")
+                fence_lang = suffix if suffix else "text"
+                self.add_header(f"File: `{rel_str}` (Size: {file_size} bytes)", level=3)
+                self.add_text(f"```{fence_lang}")
+                self.add_text(content.rstrip())
+                self.add_text("```")
+
+        # Process ungrouped files (individual files not under directory headers)
+        ungrouped_files = grouped_files.get(None, [])
+        for f in ungrouped_files:
             try:
                 rel = f.relative_to(self.root)
             except Exception:
