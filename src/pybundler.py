@@ -164,42 +164,6 @@ class Config:
             raise RuntimeError(f"Failed to save config file {config_file}: {e}")
 
 
-def _is_binary_file(file_path: Path) -> bool:
-    """Detect if a file is binary by examining its content.
-
-    Uses a fast byte-level check to determine if the file contains non-text characters.
-    This approach is more efficient than extension-based detection and handles edge cases
-    where files have unusual extensions or text files are misclassified.
-
-    Args:
-        file_path (Path): Path to the file to check.
-
-    Returns:
-        bool: True if the file appears to be binary, False if it appears to be text.
-    """
-    try:
-        # Read first 1024 bytes to check file type
-        with open(file_path, "rb") as f:
-            sample = f.read(1024)
-
-        if not sample:
-            return False
-
-        # Define allowed text bytes: common control characters + printable ASCII
-        allowed = set([7, 8, 9, 10, 12, 13, 27]) | set(range(0x20, 0x7F))
-
-        # If there are bytes outside the allowed set, treat as binary
-        for b in sample:
-            if b not in allowed:
-                return True
-
-        return False
-
-    except (OSError, IOError):
-        # If we can't read the file, assume it's binary to be safe
-        return True
-
-
 def _is_hidden_path(path: Path) -> bool:
     """Check if a path contains hidden files or directories.
 
@@ -282,10 +246,6 @@ def _collect_files(
 
             # Skip hidden files/directories unless explicitly included
             if not include_hidden and _is_hidden_path(resolved):
-                continue
-
-            # Skip binary files by content analysis
-            if resolved.is_file() and _is_binary_file(resolved):
                 continue
 
             # Skip files that are too large (if limit is enabled)
@@ -409,7 +369,8 @@ def _generate_config(
             valid_patterns.append(pattern)
         else:
             logger.warning(
-                "Pattern '%s' does not match any files or valid paths. Skipping.", pattern
+                "Pattern '%s' does not match any files or valid paths. Skipping.",
+                pattern,
             )
 
     if not valid_patterns:
@@ -839,9 +800,7 @@ class PyBundler:
                 # Attempt to read file
                 try:
                     content = f.read_text(encoding="utf-8")
-                except Exception as exc:
-                    self.add_header(f"File: `{rel_str}`", level=3)
-                    self.add_text(f"*Error reading file: {exc}*")
+                except Exception:
                     continue
 
                 # Choose fenced block language by suffix
@@ -870,9 +829,7 @@ class PyBundler:
             # Attempt to read file
             try:
                 content = f.read_text(encoding="utf-8")
-            except Exception as exc:
-                self.add_header(f"File: `{rel_str}`", level=2)
-                self.add_text(f"*Error reading file: {exc}*")
+            except Exception:
                 continue
 
             # Choose fenced block language by suffix
@@ -1033,6 +990,8 @@ def main(argv: list[str] | None = None) -> int:
 
     logger.info("Bundling files from %s using patterns: %s", root, patterns_display)
 
+    output = bundler.bundle(out_path)
+
     # Collect files and check for size warnings
     _, warnings = bundler.collect_files_with_warnings()
 
@@ -1049,8 +1008,6 @@ def main(argv: list[str] | None = None) -> int:
         logger.info(
             "Consider using --max-size to filter out large files or adjust --warn-size."
         )
-
-    output = bundler.bundle(out_path)
 
     # Get file statistics
     file_size_kb = output.stat().st_size / 1024
