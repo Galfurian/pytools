@@ -207,6 +207,9 @@ class PyBundler:
                 try:
                     with open(config_file, "r", encoding="utf-8") as f:
                         current_section = None
+                        patterns_list: list[str] = []
+                        found_old_format = False
+                        
                         for line in f:
                             line = line.strip()
                             if not line or line.startswith("#"):
@@ -217,18 +220,20 @@ class PyBundler:
                                 current_section = line[:-1].lower()
                                 continue
 
-                            # Parse patterns
-                            if ":" in line and current_section == "patterns":
-                                key, value = line.split(":", 1)
-                                key = key.strip().lower()
-                                if key == "patterns":
-                                    patterns_str = value.strip()
-                                    if patterns_str:
-                                        return [
-                                            p.strip()
-                                            for p in patterns_str.split(",")
-                                            if p.strip()
-                                        ]
+                            # Parse patterns - list format only
+                            if current_section == "patterns":
+                                if line.startswith("- "):
+                                    pattern = line[2:].strip()
+                                    if pattern:
+                                        patterns_list.append(pattern)
+                            
+                            # When we exit the patterns section, return any collected patterns
+                            elif current_section != "patterns" and patterns_list:
+                                return patterns_list
+                        
+                        # Return patterns if we found any at the end of file
+                        if patterns_list:
+                            return patterns_list
 
                 except Exception as e:
                     print(
@@ -597,10 +602,11 @@ def generate_config(
         )
         f.write("# \n")
         f.write(
-            "# Patterns section: comma-separated glob patterns to include by default\n"
+            "# Patterns section: list of glob patterns to include by default\n"
         )
         f.write("patterns:\n")
-        f.write(f"  patterns: {', '.join(patterns)}\n")
+        for pattern in patterns:
+            f.write(f"  - {pattern}\n")
         f.write("# \n")
         f.write("# TOC section: descriptions for folders/files in table of contents\n")
         f.write("toc:\n")
