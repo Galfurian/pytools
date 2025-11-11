@@ -25,6 +25,7 @@ class Config:
 
     patterns: list[str]
     toc_descriptions: dict[str, str]
+    exclude_patterns: list[str]
 
     @classmethod
     def load_from_files(cls, root: Path, config_files: list[str]) -> Config:
@@ -39,6 +40,7 @@ class Config:
         """
         patterns_list: list[str] = []
         descriptions: dict[str, str] = {}
+        exclude_list: list[str] = []
 
         for config_filename in config_files:
             config_file = root / config_filename
@@ -50,6 +52,7 @@ class Config:
                 with open(config_file, "r", encoding="utf-8") as f:
                     current_section = None
                     current_patterns: list[str] = []
+                    current_excludes: list[str] = []
 
                     for line in f:
                         line = line.strip()
@@ -68,6 +71,13 @@ class Config:
                                 if pattern:
                                     current_patterns.append(pattern)
 
+                        # Parse exclude patterns - list format only
+                        elif current_section == "exclude":
+                            if line.startswith("- "):
+                                pattern = line[2:].strip()
+                                if pattern:
+                                    current_excludes.append(pattern)
+
                         # Parse key-value pairs for TOC
                         elif current_section == "toc":
                             if ":" in line:
@@ -81,11 +91,17 @@ class Config:
                     # Merge patterns from this file (later files override)
                     if current_patterns:
                         patterns_list = current_patterns
+                    if current_excludes:
+                        exclude_list = current_excludes
 
             except Exception as e:
                 print(f"Warning: Could not read {config_filename} file: {e}")
 
-        return cls(patterns=patterns_list, toc_descriptions=descriptions)
+        return cls(
+            patterns=patterns_list,
+            toc_descriptions=descriptions,
+            exclude_patterns=exclude_list,
+        )
 
     def save_to_file(self, config_file: Path) -> None:
         """Save configuration to a file.
@@ -117,6 +133,11 @@ class Config:
                 for entry in sorted(self.toc_descriptions.keys()):
                     description = self.toc_descriptions[entry]
                     f.write(f"  {entry}: {description}\n")
+                f.write("# \n")
+                f.write("# Exclude section: patterns to exclude from bundling\n")
+                f.write("exclude:\n")
+                for pattern in self.exclude_patterns:
+                    f.write(f"  - {pattern}\n")
         except Exception as e:
             raise RuntimeError(f"Failed to save config file {config_file}: {e}")
 
@@ -136,16 +157,18 @@ def _is_binary_file(file_path: Path) -> bool:
     """
     try:
         # Read first 1024 bytes to check file type
-        with open(file_path, 'rb') as f:
+        with open(file_path, "rb") as f:
             sample = f.read(1024)
-        
+
         # Fast binary detection: check if any bytes are not text characters
         # Text characters include: TAB, LF, CR, ESC, and printable ASCII range
-        textchars = bytearray({7,8,9,10,12,13,27} | set(range(0x20, 0x100)) - {0x7f})
+        textchars = bytearray(
+            {7, 8, 9, 10, 12, 13, 27} | set(range(0x20, 0x100)) - {0x7F}
+        )
         is_binary = bool(sample.translate(None, textchars))
-        
+
         return is_binary
-            
+
     except (OSError, IOError):
         # If we can't read the file, assume it's binary to be safe
         return True
@@ -256,15 +279,23 @@ def _collect_files(
 
                 for exclude_pat in exclude_patterns:
                     # Handle directory exclusions (patterns ending with / or containing / without globs)
-                    if exclude_pat.endswith("/") or ("/" in exclude_pat and not ("*" in exclude_pat or "?" in exclude_pat)):
+                    if exclude_pat.endswith("/") or (
+                        "/" in exclude_pat
+                        and not ("*" in exclude_pat or "?" in exclude_pat)
+                    ):
                         # Directory exclusion - exclude anything under this path
                         exclude_path = exclude_pat.rstrip("/")
-                        if rel_str.startswith(exclude_path + "/") or rel_str == exclude_path:
+                        if (
+                            rel_str.startswith(exclude_path + "/")
+                            or rel_str == exclude_path
+                        ):
                             excluded = True
                             break
                     else:
                         # File or glob pattern - use fnmatch on both full path and filename
-                        if fnmatch.fnmatch(rel_str, exclude_pat) or fnmatch.fnmatch(p.name, exclude_pat):
+                        if fnmatch.fnmatch(rel_str, exclude_pat) or fnmatch.fnmatch(
+                            p.name, exclude_pat
+                        ):
                             excluded = True
                             break
 
@@ -402,7 +433,11 @@ def _generate_config(
                         toc_descriptions[dir_name] = ""
 
     # Create config object and save it
-    config = Config(patterns=valid_patterns, toc_descriptions=toc_descriptions)
+    config = Config(
+        patterns=valid_patterns,
+        toc_descriptions=toc_descriptions,
+        exclude_patterns=exclude_patterns or [],
+    )
     config_file = root / config_filename
     config.save_to_file(config_file)
 
@@ -490,12 +525,17 @@ class PyBundler:
         else:
             self.patterns = patterns
 
+        # Use provided exclude patterns or load from config
+        if exclude_patterns is None:
+            self.exclude_patterns = config.exclude_patterns
+        else:
+            self.exclude_patterns = exclude_patterns
+
         self.max_file_size = max_file_size
         self.include_hidden = include_hidden
         self.warn_size = warn_size
         self.generate_toc = generate_toc
         self.toc_descriptions = config.toc_descriptions
-        self.exclude_patterns = exclude_patterns
         self.output_lines: list[str] = []
 
     def add_header(self, title: str, level: int = 2) -> None:
@@ -507,10 +547,10 @@ class PyBundler:
             level (int):
                 The header level (1-6). Defaults to 2.
         """
-        if level <= 1:
-            self.output_lines.append(f"{'#' * level} {title}\n\n")
-        else:
-            self.output_lines.append(f"\n{'#' * level} {title}\n\n")
+        if level > 1:
+            self.add_text("")
+        self.add_text(f"{'#' * level} {title}")
+        self.add_text("")
 
     def add_text(self, text: str) -> None:
         """Add plain text to the output.
@@ -520,6 +560,30 @@ class PyBundler:
                 The text to add.
         """
         self.output_lines.append(text + "\n")
+
+    def fix_text(self) -> None:
+        """
+        Takes care of performing different types of quality of life fixes to the
+        output text such as removing excessive newlines.
+        """
+        # Look for two consecutive empty lines and remove one to avoid excessive
+        # spacing.
+        for i in range(len(self.output_lines) - 1, 0, -1):
+            prev_empty = not self.output_lines[i - 1].strip()
+            curr_empty = not self.output_lines[i].strip()
+            if curr_empty and prev_empty:
+                print(f"Removing extra empty line at index {i}")
+                del self.output_lines[i]
+
+    def get_text(self) -> str:
+        """Get the accumulated markdown output as a single string.
+
+        Returns:
+            str:
+                The complete markdown output.
+        """
+        self.fix_text()
+        return "".join(self.output_lines)
 
     def collect_files_with_warnings(self) -> tuple[list[Path], list[str]]:
         """Collect all files matching the patterns and return warnings for large files.
@@ -692,7 +756,7 @@ class PyBundler:
         if not files:
             self.add_text("No files found. Nothing to bundle.")
             output.parent.mkdir(parents=True, exist_ok=True)
-            output.write_text("".join(self.output_lines), encoding="utf-8")
+            output.write_text(self.get_text(), encoding="utf-8")
             return output
 
         # Generate table of contents if requested
@@ -788,7 +852,7 @@ class PyBundler:
             self.add_text("```")
 
         output.parent.mkdir(parents=True, exist_ok=True)
-        output.write_text("".join(self.output_lines), encoding="utf-8")
+        output.write_text(self.get_text(), encoding="utf-8")
         return output
 
 
