@@ -689,7 +689,19 @@ def main(argv: list[str] | None = None) -> int:
 
     output = bundler.bundle(out_path)
 
-    print(f"Created bundle: {output} ({output.stat().st_size / 1024:.2f} KB)")
+    # Get file statistics
+    file_size_kb = output.stat().st_size / 1024
+    
+    # Count lines and words
+    try:
+        content = output.read_text(encoding="utf-8")
+        line_count = len(content.splitlines())
+        word_count = len(content.split())
+    except Exception:
+        line_count = 0
+        word_count = 0
+
+    print(f"Created bundle: {output} ({file_size_kb:.2f} KB, {line_count} lines, {word_count} words)")
     return 0
 
 
