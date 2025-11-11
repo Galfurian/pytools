@@ -416,8 +416,10 @@ class PyBundler:
         if self.generate_toc and files:
             self.add_header("Table of Contents", level=2)
 
-            # Collect unique top-level entries with descriptions
+            # Collect unique entries - individual files with descriptions get their own entries
             toc_entries = set()
+            individual_files = set()
+            
             for f in files:
                 try:
                     rel = f.relative_to(self.root)
@@ -425,16 +427,21 @@ class PyBundler:
                     rel = f.name
                 rel_str = str(rel)
 
-                # For files in subdirectories, use the top-level folder
-                if "/" in rel_str:
-                    top_level = rel_str.split("/")[0]
+                # Check if this specific file has a description
+                if self.toc_descriptions and self.toc_descriptions.get(rel_str.lower()):
+                    individual_files.add(rel_str)
                 else:
-                    top_level = rel_str
+                    # For files in subdirectories, use the top-level folder
+                    if "/" in rel_str:
+                        top_level = rel_str.split("/")[0]
+                    else:
+                        top_level = rel_str
+                    toc_entries.add(top_level)
 
-                toc_entries.add(top_level)
-
-            # Generate TOC entries
-            for entry in sorted(toc_entries):
+            # Generate TOC entries - individual files first, then grouped folders
+            all_entries = sorted(individual_files) + sorted(toc_entries - set(entry.split("/")[0] for entry in individual_files))
+            
+            for entry in all_entries:
                 description = None
                 if self.toc_descriptions:
                     description = self.toc_descriptions.get(entry.lower())
@@ -575,7 +582,7 @@ def generate_config(
         print("No files found matching the patterns. Cannot generate config.")
         return 1
 
-    # Collect unique top-level entries
+    # Collect all file entries for TOC (not just top-level)
     toc_entries = set()
     for f in files:
         try:
@@ -583,14 +590,7 @@ def generate_config(
         except Exception:
             rel = f.name
         rel_str = str(rel)
-
-        # Use top-level folder for files in subdirectories
-        if "/" in rel_str:
-            top_level = rel_str.split("/")[0]
-        else:
-            top_level = rel_str
-
-        toc_entries.add(top_level)
+        toc_entries.add(rel_str)
 
     # Generate the config file
     config_file = root / config_filename
