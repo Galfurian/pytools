@@ -34,6 +34,9 @@ class PyBundler:
         include_hidden (bool):
             Whether to include hidden files and directories (starting with '.').
             Defaults to False.
+        warn_size (int):
+            File size threshold in bytes for warnings about potential LLM context window issues.
+            Defaults to 50KB.
         output_lines (list[str]):
             Internal list to accumulate markdown output lines.
     """
@@ -44,6 +47,7 @@ class PyBundler:
         patterns: list[str] | None = None,
         max_file_size: int | None = None,
         include_hidden: bool = False,
+        warn_size: int = 50 * 1024,  # 50KB default
     ):
         """Initialize the PyBundler with root directory and patterns.
 
@@ -56,11 +60,14 @@ class PyBundler:
                 Maximum file size in bytes to include. If None, no size limit is applied.
             include_hidden (bool):
                 Whether to include hidden files and directories. Defaults to False.
+            warn_size (int):
+                File size threshold in bytes for warnings. Defaults to 50KB.
         """
         self.root = Path(root)
         self.patterns = patterns or ["**/*.*"]
         self.max_file_size = max_file_size
         self.include_hidden = include_hidden
+        self.warn_size = warn_size
         self.output_lines: list[str] = []
 
     def _is_hidden_path(self, path: Path) -> bool:
@@ -78,14 +85,14 @@ class PyBundler:
                 True if the path contains hidden components, False otherwise.
         """
         # Check the file/directory name itself
-        if path.name.startswith('.'):
+        if path.name.startswith("."):
             return True
-        
+
         # Check all parent directories
         for parent in path.parents:
-            if parent.name.startswith('.'):
+            if parent.name.startswith("."):
                 return True
-        
+
         return False
 
     def add_header(self, title: str, level: int = 2) -> None:
@@ -203,6 +210,30 @@ class PyBundler:
         unique = sorted({p.resolve(): p for p in files}.values(), key=lambda p: str(p))
         return unique
 
+    def collect_files_with_warnings(self) -> tuple[list[Path], list[str]]:
+        """Collect all files matching the patterns and return warnings for large files.
+
+        Returns:
+            tuple[list[Path], list[str]]:
+                Tuple of (files, warnings) where warnings contains messages for files
+                exceeding the warn_size threshold.
+        """
+        files = self.collect_files()
+        warnings = []
+        
+        for f in files:
+            try:
+                file_size = f.stat().st_size
+                if file_size > self.warn_size:
+                    warnings.append(
+                        f"Warning: {f.relative_to(self.root)} is {file_size} bytes "
+                        f"({file_size/1024:.1f} KB) - may exceed LLM context window"
+                    )
+            except OSError:
+                pass
+        
+        return files, warnings
+
     def bundle(
         self,
         output: Path,
@@ -302,6 +333,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="Maximum file size in bytes to include (default: no limit)",
     )
     parser.add_argument(
+        "--warn-size",
+        type=int,
+        default=50 * 1024,
+        help="File size threshold in bytes for LLM context window warnings (default: 50KB)",
+    )
+    parser.add_argument(
         "--include-hidden",
         action="store_true",
         help="Include hidden files and directories (starting with '.')",
@@ -331,14 +368,26 @@ def main(argv: list[str] | None = None) -> int:
     patterns = [p.strip() for p in args.patterns.split(",") if p.strip()]
 
     bundler = PyBundler(
-        root, 
-        patterns=patterns, 
+        root,
+        patterns=patterns,
         max_file_size=args.max_size,
         include_hidden=args.include_hidden,
+        warn_size=args.warn_size,
     )
     out_path = Path(args.output)
 
     print(f"Bundling files from {root} using patterns: {patterns}")
+
+    # Collect files and check for size warnings
+    files, warnings = bundler.collect_files_with_warnings()
+    
+    # Print warnings for large files
+    for warning in warnings:
+        print(f"⚠️  {warning}")
+    
+    if warnings:
+        print(f"\nNote: {len(warnings)} file(s) exceed the warning threshold of {args.warn_size} bytes.")
+        print("Consider using --max-size to filter out large files or adjust --warn-size.\n")
 
     output = bundler.bundle(out_path)
 
