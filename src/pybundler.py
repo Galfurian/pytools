@@ -220,10 +220,18 @@ def _collect_files(
     }
 
     for pat in patterns:
-        # Handle directory patterns that end with "/" - convert to "**" to match all files
+        # Handle directory patterns - convert to "**" to match all files
         if pat.endswith("/") and "*" not in pat and "?" not in pat:
             # Convert "player/" to "player/**" to match all files in the directory
             actual_pat = pat + "**"
+        elif "*" not in pat and "?" not in pat:
+            # Check if this is a directory pattern without trailing slash
+            path_obj = root / pat
+            if path_obj.exists() and path_obj.is_dir():
+                # Convert "src" to "src/**" to match all files in the directory
+                actual_pat = pat + "/**"
+            else:
+                actual_pat = pat
         else:
             actual_pat = pat
 
