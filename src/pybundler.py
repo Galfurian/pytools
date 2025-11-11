@@ -37,6 +37,9 @@ class PyBundler:
         warn_size (int):
             File size threshold in bytes for warnings about potential LLM context window issues.
             Defaults to 50KB.
+        generate_toc (bool):
+            Whether to generate a table of contents at the top of the bundle.
+            Defaults to False.
         output_lines (list[str]):
             Internal list to accumulate markdown output lines.
     """
@@ -48,6 +51,7 @@ class PyBundler:
         max_file_size: int | None = None,
         include_hidden: bool = False,
         warn_size: int = 50 * 1024,  # 50KB default
+        generate_toc: bool = False,
     ):
         """Initialize the PyBundler with root directory and patterns.
 
@@ -62,12 +66,15 @@ class PyBundler:
                 Whether to include hidden files and directories. Defaults to False.
             warn_size (int):
                 File size threshold in bytes for warnings. Defaults to 50KB.
+            generate_toc (bool):
+                Whether to generate a table of contents. Defaults to False.
         """
         self.root = Path(root)
         self.patterns = patterns or ["**/*.*"]
         self.max_file_size = max_file_size
         self.include_hidden = include_hidden
         self.warn_size = warn_size
+        self.generate_toc = generate_toc
         self.output_lines: list[str] = []
 
     def _is_hidden_path(self, path: Path) -> bool:
@@ -220,7 +227,7 @@ class PyBundler:
         """
         files = self.collect_files()
         warnings = []
-        
+
         for f in files:
             try:
                 file_size = f.stat().st_size
@@ -231,7 +238,7 @@ class PyBundler:
                     )
             except OSError:
                 pass
-        
+
         return files, warnings
 
     def bundle(
@@ -264,6 +271,18 @@ class PyBundler:
             output.parent.mkdir(parents=True, exist_ok=True)
             output.write_text("".join(self.output_lines), encoding="utf-8")
             return output
+
+        # Generate table of contents if requested
+        if self.generate_toc and files:
+            self.add_header("Table of Contents", level=2)
+            for f in files:
+                try:
+                    rel = f.relative_to(self.root)
+                except Exception:
+                    rel = f.name
+                rel_str = str(rel)
+                self.add_text(f"- {rel_str}")
+            self.add_text("")
 
         for f in files:
             try:
@@ -344,6 +363,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="Include hidden files and directories (starting with '.')",
     )
     parser.add_argument(
+        "--toc",
+        action="store_true",
+        help="Generate a table of contents at the top of the bundle",
+    )
+    parser.add_argument(
         "--output",
         type=str,
         default="BUNDLE.md",
@@ -373,21 +397,26 @@ def main(argv: list[str] | None = None) -> int:
         max_file_size=args.max_size,
         include_hidden=args.include_hidden,
         warn_size=args.warn_size,
+        generate_toc=args.toc,
     )
     out_path = Path(args.output)
 
     print(f"Bundling files from {root} using patterns: {patterns}")
 
     # Collect files and check for size warnings
-    files, warnings = bundler.collect_files_with_warnings()
-    
+    _, warnings = bundler.collect_files_with_warnings()
+
     # Print warnings for large files
     for warning in warnings:
         print(f"⚠️  {warning}")
-    
+
     if warnings:
-        print(f"\nNote: {len(warnings)} file(s) exceed the warning threshold of {args.warn_size} bytes.")
-        print("Consider using --max-size to filter out large files or adjust --warn-size.\n")
+        print(
+            f"\nNote: {len(warnings)} file(s) exceed the warning threshold of {args.warn_size} bytes."
+        )
+        print(
+            "Consider using --max-size to filter out large files or adjust --warn-size.\n"
+        )
 
     output = bundler.bundle(out_path)
 
