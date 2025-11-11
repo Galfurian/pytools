@@ -71,6 +71,8 @@ class PyBundler:
     def collect_files(self) -> list[Path]:
         """Collect all files matching the patterns under the root directory.
 
+        Filters out binary files and files exceeding size limits.
+
         Returns:
             list[Path]:
                 List of matching file paths, deduplicated and sorted.
@@ -78,8 +80,80 @@ class PyBundler:
         files: list[Path] = []
         if not self.root.exists():
             return files
+
+        # Common binary file extensions to skip
+        binary_extensions = {
+            # Python bytecode
+            ".pyc",
+            ".pyo",
+            ".pyd",
+            # Images
+            ".jpg",
+            ".jpeg",
+            ".png",
+            ".gif",
+            ".bmp",
+            ".tiff",
+            ".ico",
+            # Videos
+            ".mp4",
+            ".avi",
+            ".mkv",
+            ".mov",
+            ".wmv",
+            # Audio
+            ".mp3",
+            ".wav",
+            ".flac",
+            ".aac",
+            # Archives
+            ".zip",
+            ".tar",
+            ".gz",
+            ".bz2",
+            ".xz",
+            ".7z",
+            ".rar",
+            # Documents
+            ".pdf",
+            ".doc",
+            ".docx",
+            ".xls",
+            ".xlsx",
+            ".ppt",
+            ".pptx",
+            # Executables/Libraries
+            ".exe",
+            ".dll",
+            ".so",
+            ".dylib",
+            # Databases
+            ".db",
+            ".sqlite",
+            ".sqlite3",
+        }
+
+        # 1MB limit
+        max_file_size = 1024 * 1024
+
         for pat in self.patterns:
-            files.extend([p for p in self.root.rglob(pat) if p.is_file()])
+            for p in self.root.rglob(pat):
+                if not p.is_file():
+                    continue
+
+                # Skip binary files by extension
+                if p.suffix.lower() in binary_extensions:
+                    continue
+
+                # Skip files that are too large
+                try:
+                    if p.stat().st_size > max_file_size:
+                        continue
+                except OSError:
+                    continue
+
+                files.append(p)
+
         # Deduplicate and sort by path
         unique = sorted({p.resolve(): p for p in files}.values(), key=lambda p: str(p))
         return unique
@@ -122,6 +196,12 @@ class PyBundler:
                 rel = f.name
 
             rel_str = str(rel)
+            # Get file size
+            try:
+                file_size = f.stat().st_size
+            except Exception:
+                file_size = 0
+
             # Attempt to read file
             try:
                 content = f.read_text(encoding="utf-8")
@@ -133,6 +213,7 @@ class PyBundler:
             # Choose fenced block language by suffix
             suffix = f.suffix.lower().lstrip(".")
             fence_lang = suffix if suffix else "text"
+            self.add_header(f"File: `{rel_str}` (Size: {file_size} bytes)", level=2)
             self.add_text("")
             self.add_text(f"```{fence_lang}")
             self.add_text(content.rstrip())
