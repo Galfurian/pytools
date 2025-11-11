@@ -284,13 +284,9 @@ def _is_valid_pattern(root: Path, pattern: str) -> tuple[bool, list[Path]]:
     if files:
         return True, files
 
-    # If no files found, check if it's a valid directory path (for patterns ending with /)
-    if pattern.endswith("/"):
-        path_obj = root / pattern.rstrip("/")
-        if path_obj.exists() and path_obj.is_dir():
-            return True, []
-    elif not ("*" in pattern or "?" in pattern):
-        # For non-glob patterns, check if the path exists at all
+    # If no files found, check if it's a valid path
+    if not ("*" in pattern or "?" in pattern):
+        # For non-glob patterns, check if the path exists (file or directory)
         path_obj = root / pattern
         if path_obj.exists():
             return True, []
