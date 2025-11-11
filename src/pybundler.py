@@ -592,15 +592,36 @@ def generate_config(
         print("No files found matching the patterns. Cannot generate config.")
         return 1
 
-    # Collect all file entries for TOC (not just top-level)
+    # Collect TOC entries based on pattern types
     toc_entries = set()
-    for f in files:
-        try:
-            rel = f.relative_to(root)
-        except Exception:
-            rel = f.name
-        rel_str = str(rel)
-        toc_entries.add(rel_str)
+
+    # Analyze each pattern to determine TOC entries
+    for pattern in patterns:
+        # If pattern ends with /** or /*, it's a directory pattern - add directory name
+        if pattern.endswith("/**") or pattern.endswith("/*"):
+            dir_name = pattern.rstrip("/*")
+            if "/" in dir_name:
+                # For nested directories like "player/**", add "player"
+                toc_entries.add(dir_name.split("/")[0])
+            else:
+                # For top-level directories like "journal/**", add "journal"
+                toc_entries.add(dir_name)
+        elif "*" in pattern or "?" in pattern:
+            # Glob pattern - collect what it actually matches and add top-level entries
+            for f in files:
+                try:
+                    rel = f.relative_to(root)
+                except Exception:
+                    rel = f.name
+                rel_str = str(rel)
+                if "/" in rel_str:
+                    toc_entries.add(rel_str.split("/")[0])
+                else:
+                    toc_entries.add(rel_str)
+        else:
+            # Specific file pattern - add it directly if it exists
+            if (root / pattern).exists():
+                toc_entries.add(pattern)
 
     # Generate the config file
     config_file = root / config_filename
@@ -697,7 +718,7 @@ def main(argv: list[str] | None = None) -> int:
 
     # Get file statistics
     file_size_kb = output.stat().st_size / 1024
-    
+
     # Count lines and words
     try:
         content = output.read_text(encoding="utf-8")
@@ -710,7 +731,9 @@ def main(argv: list[str] | None = None) -> int:
         word_count = 0
         token_estimate = 0
 
-    print(f"Created bundle: {output} ({file_size_kb:.2f} KB, {line_count} lines, {word_count} words, ~{token_estimate} tokens)")
+    print(
+        f"Created bundle: {output} ({file_size_kb:.2f} KB, {line_count} lines, {word_count} words, ~{token_estimate} tokens)"
+    )
     return 0
 
 
