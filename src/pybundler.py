@@ -670,7 +670,13 @@ def main(argv: list[str] | None = None) -> int:
     )
     out_path = Path(args.output)
 
-    print(f"Bundling files from {root} using patterns: {bundler.patterns}")
+    # Format patterns for display
+    if len(bundler.patterns) <= 3:
+        patterns_display = str(bundler.patterns)
+    else:
+        patterns_display = f"[{bundler.patterns[0]}, {bundler.patterns[1]}, {bundler.patterns[2]}, ...] ({len(bundler.patterns)} total)"
+
+    print(f"Bundling files from {root} using patterns: {patterns_display}")
 
     # Collect files and check for size warnings
     _, warnings = bundler.collect_files_with_warnings()
