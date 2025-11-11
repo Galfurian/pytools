@@ -290,6 +290,31 @@ def scan_repos(root_path):
     return repos
 
 
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+    """Parse command-line arguments.
+
+    Args:
+        argv (list[str] | None):
+            List of command-line arguments. If None, uses sys.argv.
+
+    Returns:
+        argparse.Namespace:
+            Parsed arguments.
+    """
+    parser = argparse.ArgumentParser(
+        description="Check git repositories for uncommitted changes and unpushed branches."
+    )
+    parser.add_argument(
+        "root_path", type=str, help="Root path to scan for git repositories"
+    )
+    parser.add_argument(
+        "--summary",
+        action="store_true",
+        help="Output summary table instead of detailed view",
+    )
+    return parser.parse_args(argv)
+
+
 def main():
     """
     Main entry point for the repository checker script.
@@ -303,18 +328,7 @@ def main():
     Returns:
         None
     """
-    parser = argparse.ArgumentParser(
-        description="Check git repositories for uncommitted changes and unpushed branches."
-    )
-    parser.add_argument(
-        "root_path", type=str, help="Root path to scan for git repositories"
-    )
-    parser.add_argument(
-        "--summary",
-        action="store_true",
-        help="Output summary table instead of detailed view",
-    )
-    args = parser.parse_args()
+    args = parse_args()
 
     handler = logging.StreamHandler()
     handler.setFormatter(ColorFormatter("[%(levelname)-9s] %(message)s"))

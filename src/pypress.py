@@ -236,18 +236,16 @@ def compress_to_zip(
             )
 
 
-def main():
-    """
-    Main entry point for the compression script.
-
-    Parses command-line arguments, validates inputs, and performs the compression
-    operation with appropriate logging and error handling.
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+    """Parse command-line arguments.
 
     Args:
-        None
+        argv (list[str] | None):
+            List of command-line arguments. If None, uses sys.argv.
 
     Returns:
-        None
+        argparse.Namespace:
+            Parsed arguments.
     """
     parser = argparse.ArgumentParser(
         description="Compress a file or folder into a .tar.gz or .zip archive."
@@ -284,7 +282,23 @@ def main():
         default=None,
         help="Only compress files older than specified duration (e.g., '30d', '1w', '2M').",
     )
-    args = parser.parse_args()
+    return parser.parse_args(argv)
+
+
+def main():
+    """
+    Main entry point for the compression script.
+
+    Parses command-line arguments, validates inputs, and performs the compression
+    operation with appropriate logging and error handling.
+
+    Args:
+        None
+
+    Returns:
+        None
+    """
+    args = parse_args()
 
     handler = logging.StreamHandler()
     handler.setFormatter(ColorFormatter("%(levelname)s: %(message)s"))

@@ -412,8 +412,12 @@ def write_csv(stats_list, outfile):
 
 
 # -- Args Parsing and Main --
-def parse_args():
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     """Parse command-line arguments.
+
+    Args:
+        argv (list[str] | None):
+            List of command-line arguments. If None, uses sys.argv.
 
     Returns:
         argparse.Namespace:
@@ -496,7 +500,7 @@ def parse_args():
     parser.add_argument(
         "--quiet", action="store_true", help="Suppress file skip and error messages"
     )
-    return parser.parse_args()
+    return parser.parse_args(argv)
 
 
 def main():

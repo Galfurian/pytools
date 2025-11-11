@@ -782,18 +782,16 @@ def print_tree(
             )
 
 
-def main() -> None:
-    """
-    Main entry point for the mydu disk usage analyzer.
-
-    Parses command-line arguments, scans the specified directory, and prints the
-    results in tree format with optional filtering and formatting.
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+    """Parse command-line arguments.
 
     Args:
-        None
+        argv (list[str] | None):
+            List of command-line arguments. If None, uses sys.argv.
 
     Returns:
-        None
+        argparse.Namespace:
+            Parsed arguments.
     """
     parser = argparse.ArgumentParser(
         description="Improved disk usage analyzer with tree-like output and coloring.",
@@ -907,8 +905,23 @@ def main() -> None:
         action="store_true",
         help="Show detailed file information (permissions, owner, group, modification time)",
     )
+    return parser.parse_args(argv)
 
-    args = parser.parse_args()
+
+def main() -> None:
+    """
+    Main entry point for the mydu disk usage analyzer.
+
+    Parses command-line arguments, scans the specified directory, and prints the
+    results in tree format with optional filtering and formatting.
+
+    Args:
+        None
+
+    Returns:
+        None
+    """
+    args = parse_args()
 
     # Process comma-separated exclude and include patterns.
     args.exclude = process_patterns(args.exclude)
