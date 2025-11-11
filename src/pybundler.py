@@ -28,11 +28,14 @@ class PyBundler:
             The root directory to bundle files from.
         patterns (list[str] | None):
             List of glob patterns to match files against. Defaults to ["**/*.*"].
+        max_file_size (int | None):
+            Maximum file size in bytes to include. Files larger than this will be skipped.
+            If None, no size limit is applied.
         output_lines (list[str]):
             Internal list to accumulate markdown output lines.
     """
 
-    def __init__(self, root: Path, patterns: list[str] | None = None):
+    def __init__(self, root: Path, patterns: list[str] | None = None, max_file_size: int | None = None):
         """Initialize the PyBundler with root directory and patterns.
 
         Args:
@@ -40,9 +43,12 @@ class PyBundler:
                 The root directory to search for files.
             patterns (list[str] | None):
                 List of glob patterns to match files. If None, defaults to ["**/*.*"].
+            max_file_size (int | None):
+                Maximum file size in bytes to include. If None, no size limit is applied.
         """
         self.root = Path(root)
         self.patterns = patterns or ["**/*.*"]
+        self.max_file_size = max_file_size
         self.output_lines: list[str] = []
 
     def add_header(self, title: str, level: int = 2) -> None:
@@ -133,9 +139,6 @@ class PyBundler:
             ".sqlite3",
         }
 
-        # 1MB limit
-        max_file_size = 1024 * 1024
-
         for pat in self.patterns:
             for p in self.root.rglob(pat):
                 if not p.is_file():
@@ -145,12 +148,13 @@ class PyBundler:
                 if p.suffix.lower() in binary_extensions:
                     continue
 
-                # Skip files that are too large
-                try:
-                    if p.stat().st_size > max_file_size:
+                # Skip files that are too large (if limit is enabled)
+                if self.max_file_size is not None:
+                    try:
+                        if p.stat().st_size > self.max_file_size:
+                            continue
+                    except OSError:
                         continue
-                except OSError:
-                    continue
 
                 files.append(p)
 
@@ -251,6 +255,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="Comma-separated glob patterns to include (default: '**/*.*')",
     )
     parser.add_argument(
+        "--max-size",
+        type=int,
+        default=None,
+        help="Maximum file size in bytes to include (default: no limit)",
+    )
+    parser.add_argument(
         "--output",
         type=str,
         default="BUNDLE.md",
@@ -274,7 +284,7 @@ def main(argv: list[str] | None = None) -> int:
     root = Path(args.root)
     patterns = [p.strip() for p in args.patterns.split(",") if p.strip()]
 
-    bundler = PyBundler(root, patterns=patterns)
+    bundler = PyBundler(root, patterns=patterns, max_file_size=args.max_size)
     out_path = Path(args.output)
 
     print(f"Bundling files from {root} using patterns: {patterns}")
