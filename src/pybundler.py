@@ -19,28 +19,62 @@ from pathlib import Path
 class PyBundler:
     """Bundle files for LLM ingestion into a single markdown file.
 
-    Contract:
-    - Inputs: root directory, list of glob patterns, optional description map.
-    - Output: Path to generated markdown containing sections per file.
-    - Error modes: missing root or no files are handled gracefully; exceptions
-      during reading a file are reported and skipped.
+    This class collects files matching specified glob patterns under a root
+    directory and generates a single markdown document containing all files
+    with their contents in fenced code blocks.
+
+    Attributes:
+        root (Path):
+            The root directory to bundle files from.
+        patterns (list[str] | None):
+            List of glob patterns to match files against. Defaults to ["**/*.*"].
+        output_lines (list[str]):
+            Internal list to accumulate markdown output lines.
     """
 
     def __init__(self, root: Path, patterns: list[str] | None = None):
+        """Initialize the PyBundler with root directory and patterns.
+
+        Args:
+            root (Path):
+                The root directory to search for files.
+            patterns (list[str] | None):
+                List of glob patterns to match files. If None, defaults to ["**/*.*"].
+        """
         self.root = Path(root)
         self.patterns = patterns or ["**/*.*"]
         self.output_lines: list[str] = []
 
     def add_header(self, title: str, level: int = 2) -> None:
+        """Add a markdown header to the output.
+
+        Args:
+            title (str):
+                The header text.
+            level (int):
+                The header level (1-6). Defaults to 2.
+        """
         if level <= 1:
             self.output_lines.append(f"{'#' * level} {title}\n\n")
         else:
             self.output_lines.append(f"\n{'#' * level} {title}\n\n")
 
     def add_text(self, text: str) -> None:
+        """Add plain text to the output.
+
+        Args:
+            text (str):
+                The text to add.
+        """
         self.output_lines.append(text + "\n")
 
     def collect_files(self) -> list[Path]:
+        """Collect all files matching the patterns under the root directory.
+
+        Returns:
+            list[Path]:
+                List of matching file paths, deduplicated and sorted.
+        """
         files: list[Path] = []
         if not self.root.exists():
             return files
@@ -54,9 +88,19 @@ class PyBundler:
         self,
         output: Path,
     ) -> Path:
-        """Create the bundle and write to `output`.
+        """Create the bundle and write to the specified output file.
 
-        - description_map: mapping of relative path -> description.
+        Collects all matching files, adds a header with generation timestamp,
+        and writes each file's content in a fenced code block to the output
+        markdown file.
+
+        Args:
+            output (Path):
+                The path where the markdown bundle will be written.
+
+        Returns:
+            Path:
+                The path to the created output file.
         """
         self.add_header("Project Bundle for LLM", level=1)
         self.add_text(
@@ -100,6 +144,16 @@ class PyBundler:
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+    """Parse command-line arguments.
+
+    Args:
+        argv (list[str] | None):
+            List of command-line arguments. If None, uses sys.argv.
+
+    Returns:
+        argparse.Namespace:
+            Parsed arguments.
+    """
     parser = argparse.ArgumentParser(
         description="Bundle project files into a single markdown for LLM ingestion."
     )
@@ -125,6 +179,16 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
 
 def main(argv: list[str] | None = None) -> int:
+    """Main entry point for the pybundler command-line tool.
+
+    Args:
+        argv (list[str] | None):
+            Command-line arguments. If None, uses sys.argv.
+
+    Returns:
+        int:
+            Exit code (0 for success).
+    """
     args = parse_args(argv)
     root = Path(args.root)
     patterns = [p.strip() for p in args.patterns.split(",") if p.strip()]

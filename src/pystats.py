@@ -59,7 +59,16 @@ COMMENT_SYNTAX_MAP = {
 
 # -- Utility Functions --
 def is_text_file(filepath):
-    """Heuristically determines if a file is text (tries reading, checks for null bytes)."""
+    """Heuristically determines if a file is text (tries reading, checks for null bytes).
+
+    Args:
+        filepath (str):
+            Path to the file to check.
+
+    Returns:
+        bool:
+            True if the file appears to be text, False otherwise.
+    """
     try:
         with open(filepath, "rb") as f:
             data = f.read(1024)
@@ -73,15 +82,49 @@ def is_text_file(filepath):
 
 
 def word_count(text):
+    """Count the number of words in the text.
+
+    Args:
+        text (str):
+            The text to count words in.
+
+    Returns:
+        int:
+            The number of words.
+    """
     return len(re.findall(r"\b\w+\b", text))
 
 
 def token_estimate(text):
+    """Estimate the number of tokens in the text.
+
+    Uses a simple heuristic of splitting on sequences of non-whitespace.
+
+    Args:
+        text (str):
+            The text to estimate tokens for.
+
+    Returns:
+        int:
+            The estimated number of tokens.
+    """
     # Simple: split on sequences of non-whitespace for GPT-like counting
     return len(re.findall(r"\S+", text))
 
 
 def detect_comment_lines(text, ext):
+    """Detect the number of comment lines in the text based on file extension.
+
+    Args:
+        text (str):
+            The text content of the file.
+        ext (str):
+            The file extension (e.g., '.py', '.js').
+
+    Returns:
+        int:
+            The number of comment lines.
+    """
     comment_prefix = COMMENT_SYNTAX_MAP.get(ext, None)
     if not comment_prefix:
         return 0
@@ -91,6 +134,16 @@ def detect_comment_lines(text, ext):
 
 
 def safe_open(filepath):
+    """Safely open and read a file, trying multiple encodings.
+
+    Args:
+        filepath (str):
+            Path to the file to read.
+
+    Returns:
+        str:
+            The file content as a string, or empty string if failed.
+    """
     for encoding in ("utf-8", "latin-1", "ascii"):
         try:
             with open(filepath, "r", encoding=encoding) as f:
@@ -103,6 +156,12 @@ def safe_open(filepath):
 # -- Statistics Storage Class --
 class FileStats:
     def __init__(self, path):
+        """Initialize FileStats with a file path.
+
+        Args:
+            path (str):
+                Path to the file to analyze.
+        """
         self.path = path
         self.ext = os.path.splitext(path)[1]
         self.lines = 0
@@ -116,6 +175,12 @@ class FileStats:
         self.relpath = ""
 
     def analyze(self, llm_limit):
+        """Analyze the file and populate statistics.
+
+        Args:
+            llm_limit (int):
+                Token limit for LLM context window check.
+        """
         try:
             text = safe_open(self.path)
             self.chars = len(text)
@@ -138,12 +203,24 @@ class FileStats:
             self.llm_status = "ERROR"
 
     def comment_percent(self):
+        """Calculate the percentage of lines that are comments.
+
+        Returns:
+            float:
+                Percentage of comment lines, rounded to 1 decimal place.
+        """
         try:
             return round(100 * self.comment_lines / max(self.lines, 1), 1)
         except ZeroDivisionError:
             return 0.0
 
     def to_dict(self):
+        """Convert the FileStats to a dictionary.
+
+        Returns:
+            dict:
+                Dictionary representation of the file statistics.
+        """
         return {
             "file": self.relpath or self.path,
             "lines": self.lines,
@@ -160,6 +237,26 @@ class FileStats:
 
 # -- Directory Traversal & Analysis --
 def walk_directory(root, exts, exclude_dirs, include_hidden, force_binary, relpaths):
+    """Walk the directory tree and collect FileStats for matching files.
+
+    Args:
+        root (str):
+            Root directory to walk.
+        exts (list[str]):
+            List of file extensions to include (empty for all).
+        exclude_dirs (list[str]):
+            Directory names to exclude.
+        include_hidden (bool):
+            Whether to include hidden files and directories.
+        force_binary (bool):
+            Whether to force analysis of binary files.
+        relpaths (bool):
+            Whether to use relative paths in FileStats.
+
+    Returns:
+        list[FileStats]:
+            List of FileStats objects for the matching files.
+    """
     stats_list = []
     for dirpath, dirnames, filenames in os.walk(root):
         # Skip hidden directories unless --include-hidden
@@ -189,6 +286,20 @@ def walk_directory(root, exts, exclude_dirs, include_hidden, force_binary, relpa
 
 # -- Output Formatting --
 def print_table(stats_list, llm_limit, group_ext, sort_by, summary):
+    """Print a formatted table of file statistics.
+
+    Args:
+        stats_list (list[FileStats]):
+            List of FileStats to display.
+        llm_limit (int):
+            Token limit for LLM context window.
+        group_ext (bool):
+            Whether to group files by extension.
+        sort_by (str):
+            Attribute to sort by (e.g., 'lines', 'tokens').
+        summary (bool):
+            Whether to show summary warnings.
+    """
     # Determine max file name length for column width
     file_len = max(len(fs.relpath) for fs in stats_list) if stats_list else 4
     hdr = (
@@ -260,11 +371,27 @@ def print_table(stats_list, llm_limit, group_ext, sort_by, summary):
 
 
 def write_json(stats_list, outfile):
+    """Write file statistics to a JSON file.
+
+    Args:
+        stats_list (list[FileStats]):
+            List of FileStats to write.
+        outfile (str):
+            Path to the output JSON file.
+    """
     with open(outfile, "w", encoding="utf-8") as f:
         f.write(json.dumps([fs.to_dict() for fs in stats_list], indent=2))
 
 
 def write_csv(stats_list, outfile):
+    """Write file statistics to a CSV file.
+
+    Args:
+        stats_list (list[FileStats]):
+            List of FileStats to write.
+        outfile (str):
+            Path to the output CSV file.
+    """
     hdr = [
         "file",
         "lines",
@@ -286,6 +413,12 @@ def write_csv(stats_list, outfile):
 
 # -- Args Parsing and Main --
 def parse_args():
+    """Parse command-line arguments.
+
+    Returns:
+        argparse.Namespace:
+            Parsed command-line arguments.
+    """
     parser = argparse.ArgumentParser(
         description="pystats: file statistics tool for LLM and dev workflows."
     )
@@ -367,6 +500,16 @@ def parse_args():
 
 
 def main():
+    """Main entry point for the pystats command-line tool.
+
+    Parses arguments, analyzes files, and outputs statistics.
+
+    Args:
+        None
+
+    Returns:
+        None
+    """
     # Setup logging with color
     handler = logging.StreamHandler()
     handler.setFormatter(ColorFormatter("%(levelname)s: %(message)s"))
@@ -410,6 +553,16 @@ def main():
 
     # Filter by lines and words if requested
     def stat_filter(fs):
+        """Filter function to check if a FileStats meets the criteria.
+
+        Args:
+            fs (FileStats):
+                The FileStats object to check.
+
+        Returns:
+            bool:
+                True if the file meets the filter criteria, False otherwise.
+        """
         if args.min_words is not None and fs.words < args.min_words:
             return False
         if args.max_words is not None and fs.words > args.max_words:

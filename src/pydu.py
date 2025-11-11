@@ -551,6 +551,16 @@ def node_matches(node: TreeNode, args: argparse.Namespace) -> bool:
     are considered matching if they themselves match or if their children may
     match (handled by filter_tree). This function only evaluates the node's
     own properties.
+
+    Args:
+        node (TreeNode):
+            The tree node to check against filters.
+        args (argparse.Namespace):
+            Parsed command-line arguments containing filter criteria.
+
+    Returns:
+        bool:
+            True if the node matches the filters, False otherwise.
     """
     # Include/exclude by name patterns
     name = node.name
@@ -602,6 +612,16 @@ def filter_tree(node: TreeNode, args: argparse.Namespace) -> TreeNode | None:
 
     For directories, children are filtered first, and the directory is kept
     only if it has children left after filtering.
+
+    Args:
+        node (TreeNode):
+            The root node of the tree to filter.
+        args (argparse.Namespace):
+            Parsed command-line arguments containing filter criteria.
+
+    Returns:
+        TreeNode | None:
+            The filtered tree node, or None if it doesn't match filters.
     """
     # Files and symlinks: simple match
     if node.node_type in (NodeType.FILE, NodeType.SYMLINK):
@@ -628,17 +648,44 @@ def filter_tree(node: TreeNode, args: argparse.Namespace) -> TreeNode | None:
 
 
 def sort_key_size(node: TreeNode) -> int:
-    """Sort key function for sorting by size."""
+    """Sort key function for sorting by size.
+
+    Args:
+        node (TreeNode):
+            The tree node to get the sort key for.
+
+    Returns:
+        int:
+            The size in bytes for sorting.
+    """
     return node.size
 
 
 def sort_key_mtime(node: TreeNode) -> float:
-    """Sort key function for sorting by modification time."""
+    """Sort key function for sorting by modification time.
+
+    Args:
+        node (TreeNode):
+            The tree node to get the sort key for.
+
+    Returns:
+        float:
+            The modification time as Unix timestamp for sorting.
+    """
     return node.mtime
 
 
 def sort_key_name(node: TreeNode) -> str:
-    """Sort key function for sorting by name."""
+    """Sort key function for sorting by name.
+
+    Args:
+        node (TreeNode):
+            The tree node to get the sort key for.
+
+    Returns:
+        str:
+            The node name for sorting.
+    """
     return node.name
 
 
@@ -660,6 +707,9 @@ def print_tree(
             Current tree prefix string for indentation
         is_last (bool):
             Whether this is the last child in the parent's list
+
+    Returns:
+        None
     """
     if args.max_depth is not None and node.depth > args.max_depth:
         return
@@ -738,6 +788,12 @@ def main() -> None:
 
     Parses command-line arguments, scans the specified directory, and prints the
     results in tree format with optional filtering and formatting.
+
+    Args:
+        None
+
+    Returns:
+        None
     """
     parser = argparse.ArgumentParser(
         description="Improved disk usage analyzer with tree-like output and coloring.",

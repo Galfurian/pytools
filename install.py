@@ -49,14 +49,32 @@ class ColorFormatter(logging.Formatter):
 
 
 def check_shebang(file_path):
-    """Check if the file has the correct shebang."""
+    """Check if the file has the correct shebang.
+
+    Args:
+        file_path (str):
+            Path to the file to check.
+
+    Returns:
+        bool:
+            True if the file has the correct shebang, False otherwise.
+    """
     with open(file_path) as f:
         first_line = f.readline().strip()
     return first_line == "#!/usr/bin/env python3"
 
 
 def check_syntax(file_path):
-    """Check if the Python file has valid syntax."""
+    """Check if the Python file has valid syntax.
+
+    Args:
+        file_path (str):
+            Path to the Python file to check.
+
+    Returns:
+        bool:
+            True if the syntax is valid, False otherwise.
+    """
     try:
         subprocess.run(
             [sys.executable, "-m", "py_compile", str(file_path)],
@@ -70,12 +88,30 @@ def check_syntax(file_path):
 
 
 def check_command_exists(command):
-    """Check if a command already exists in PATH."""
+    """Check if a command already exists in PATH.
+
+    Args:
+        command (str):
+            The command name to check.
+
+    Returns:
+        bool:
+            True if the command exists in PATH, False otherwise.
+    """
     return shutil.which(command) is not None
 
 
 def install_all_scripts(args):
-    """Install all scripts in src/ with safety checks."""
+    """Install all scripts in src/ with safety checks.
+
+    Args:
+        args (argparse.Namespace):
+            Parsed command-line arguments.
+
+    Returns:
+        bool:
+            True if all scripts were installed successfully, False otherwise.
+    """
     src_dir = Path(__file__).parent / "src"
     if not src_dir.exists():
         logger.error(f"{src_dir} does not exist.")
@@ -147,6 +183,12 @@ def main():
     Main entry point for the installation script.
 
     Parses command-line arguments and installs scripts to the specified directory.
+
+    Args:
+        None
+
+    Returns:
+        None
     """
     handler = logging.StreamHandler()
     handler.setFormatter(ColorFormatter())

@@ -296,6 +296,12 @@ def main():
 
     Parses command-line arguments, scans repositories, and reports unstable ones
     with colored logging output.
+
+    Args:
+        None
+
+    Returns:
+        None
     """
     parser = argparse.ArgumentParser(
         description="Check git repositories for uncommitted changes and unpushed branches."

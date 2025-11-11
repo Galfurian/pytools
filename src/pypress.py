@@ -242,6 +242,12 @@ def main():
 
     Parses command-line arguments, validates inputs, and performs the compression
     operation with appropriate logging and error handling.
+
+    Args:
+        None
+
+    Returns:
+        None
     """
     parser = argparse.ArgumentParser(
         description="Compress a file or folder into a .tar.gz or .zip archive."
