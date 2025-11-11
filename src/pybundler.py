@@ -93,24 +93,30 @@ class Config:
         Args:
             config_file (Path): Path to save the config file.
         """
-        with open(config_file, "w", encoding="utf-8") as f:
-            f.write("# Bundler Configuration File\n")
-            f.write(
-                "# This file defines default patterns and TOC descriptions for your project\n"
-            )
-            f.write("# \n")
-            f.write("# Patterns section: list of glob patterns to include by default\n")
-            f.write("patterns:\n")
-            for pattern in self.patterns:
-                f.write(f"  - {pattern}\n")
-            f.write("# \n")
-            f.write(
-                "# TOC section: descriptions for folders/files in table of contents\n"
-            )
-            f.write("toc:\n")
-            for entry in sorted(self.toc_descriptions.keys()):
-                description = self.toc_descriptions[entry]
-                f.write(f"  {entry}: {description}\n")
+        try:
+            # Ensure the directory exists
+            config_file.parent.mkdir(parents=True, exist_ok=True)
+            
+            with open(config_file, "w", encoding="utf-8") as f:
+                f.write("# Bundler Configuration File\n")
+                f.write(
+                    "# This file defines default patterns and TOC descriptions for your project\n"
+                )
+                f.write("# \n")
+                f.write("# Patterns section: list of glob patterns to include by default\n")
+                f.write("patterns:\n")
+                for pattern in self.patterns:
+                    f.write(f"  - {pattern}\n")
+                f.write("# \n")
+                f.write(
+                    "# TOC section: descriptions for folders/files in table of contents\n"
+                )
+                f.write("toc:\n")
+                for entry in sorted(self.toc_descriptions.keys()):
+                    description = self.toc_descriptions[entry]
+                    f.write(f"  {entry}: {description}\n")
+        except Exception as e:
+            raise RuntimeError(f"Failed to save config file {config_file}: {e}")
 
 
 def _is_hidden_path(path: Path) -> bool:
@@ -349,10 +355,10 @@ def _generate_config(
         if pattern.endswith("/**") or pattern.endswith("/*"):
             dir_name = pattern.rstrip("/*")
             if "/" in dir_name:
-                # For nested directories like "player/**", add "player"
+                # For nested directory patterns, add the top-level directory name
                 toc_descriptions[dir_name.split("/")[0]] = ""
             else:
-                # For top-level directories like "journal/**", add "journal"
+                # For top-level directory patterns, add the directory name
                 toc_descriptions[dir_name] = ""
         elif "*" in pattern or "?" in pattern:
             # Glob pattern - collect what it actually matches and add top-level entries
@@ -543,6 +549,19 @@ class PyBundler:
                     directory_patterns.add(dir_pattern)
             elif pattern.endswith("/") and "*" not in pattern and "?" not in pattern:
                 directory_patterns.add(pattern)
+            elif "**" in pattern:
+                # Handle glob patterns that represent directory structures
+                # e.g., "journal/**" -> "journal/"
+                # e.g., "test_journal/journal/**" -> "test_journal/journal/"
+                if pattern.endswith("/**"):
+                    dir_pattern = pattern[:-3] + "/"  # Remove /** and add /
+                    directory_patterns.add(dir_pattern)
+                elif "/**" in pattern:
+                    # Extract the directory part before /**
+                    dir_part = pattern.split("/**")[0]
+                    if dir_part:
+                        dir_pattern = dir_part.rstrip("/") + "/"
+                        directory_patterns.add(dir_pattern)
 
         # Group files by matching directory patterns
         grouped_files: dict[str | None, list[Path]] = {None: []}
@@ -666,7 +685,13 @@ class PyBundler:
                 continue
 
             # Calculate directory statistics
-            total_size = sum(f.stat().st_size for f in dir_files if f.exists())
+            total_size = 0
+            for f in dir_files:
+                try:
+                    if f.exists():
+                        total_size += f.stat().st_size
+                except OSError:
+                    pass
             dir_name = dir_pattern.rstrip("/")
 
             # Create directory header
@@ -776,8 +801,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--warn-size",
         type=int,
-        default=50 * 1024,
-        help="File size threshold in bytes for LLM context window warnings (default: 50KB)",
+        default=64 * 1024,
+        help="File size threshold in bytes for LLM context window warnings (default: 64KB)",
     )
     parser.add_argument(
         "--include-hidden",
