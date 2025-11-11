@@ -40,6 +40,8 @@ class PyBundler:
         generate_toc (bool):
             Whether to generate a table of contents at the top of the bundle.
             Defaults to False.
+        toc_descriptions (dict[str, str] | None):
+            Optional descriptions for files/folders in TOC, loaded from .bundler.toc file.
         output_lines (list[str]):
             Internal list to accumulate markdown output lines.
     """
@@ -75,6 +77,7 @@ class PyBundler:
         self.include_hidden = include_hidden
         self.warn_size = warn_size
         self.generate_toc = generate_toc
+        self.toc_descriptions = self._load_toc_descriptions()
         self.output_lines: list[str] = []
 
     def _is_hidden_path(self, path: Path) -> bool:
@@ -101,6 +104,43 @@ class PyBundler:
                 return True
 
         return False
+
+    def _load_toc_descriptions(self) -> dict[str, str]:
+        """Load TOC descriptions from .bundler.toc file if it exists.
+
+        The .bundler.toc file should contain lines in the format:
+        filename_or_folder: Description of what this contains
+
+        Returns:
+            dict[str, str]:
+                Mapping of filenames/folders to their descriptions.
+        """
+        toc_file = self.root / ".bundler.toc"
+        descriptions = {}
+        
+        if toc_file.exists():
+            try:
+                with open(toc_file, 'r', encoding='utf-8') as f:
+                    for line_num, line in enumerate(f, 1):
+                        line = line.strip()
+                        if not line or line.startswith('#'):
+                            continue
+                        
+                        if ':' not in line:
+                            print(f"Warning: Invalid line {line_num} in .bundler.toc: {line}")
+                            continue
+                        
+                        key, description = line.split(':', 1)
+                        key = key.strip()
+                        description = description.strip()
+                        
+                        if key and description:
+                            descriptions[key.lower()] = description
+                            
+            except Exception as e:
+                print(f"Warning: Could not read .bundler.toc file: {e}")
+        
+        return descriptions
 
     def add_header(self, title: str, level: int = 2) -> None:
         """Add a markdown header to the output.
@@ -275,13 +315,35 @@ class PyBundler:
         # Generate table of contents if requested
         if self.generate_toc and files:
             self.add_header("Table of Contents", level=2)
+            
+            # Collect unique top-level entries with descriptions
+            toc_entries = set()
             for f in files:
                 try:
                     rel = f.relative_to(self.root)
                 except Exception:
                     rel = f.name
                 rel_str = str(rel)
-                self.add_text(f"- {rel_str}")
+                
+                # For files in subdirectories, use the top-level folder
+                if '/' in rel_str:
+                    top_level = rel_str.split('/')[0]
+                else:
+                    top_level = rel_str
+                
+                toc_entries.add(top_level)
+            
+            # Generate TOC entries
+            for entry in sorted(toc_entries):
+                description = None
+                if self.toc_descriptions:
+                    description = self.toc_descriptions.get(entry.lower())
+                
+                if description:
+                    self.add_text(f"- **{entry}** - {description}")
+                else:
+                    self.add_text(f"- {entry}")
+            
             self.add_text("")
 
         for f in files:
@@ -309,7 +371,6 @@ class PyBundler:
             suffix = f.suffix.lower().lstrip(".")
             fence_lang = suffix if suffix else "text"
             self.add_header(f"File: `{rel_str}` (Size: {file_size} bytes)", level=2)
-            self.add_text("")
             self.add_text(f"```{fence_lang}")
             self.add_text(content.rstrip())
             self.add_text("```")
@@ -368,12 +429,77 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="Generate a table of contents at the top of the bundle",
     )
     parser.add_argument(
+        "--generate-toc-config",
+        action="store_true",
+        help="Generate a starter .bundler.toc file with all folders/files and empty descriptions",
+    )
+    parser.add_argument(
         "--output",
         type=str,
         default="BUNDLE.md",
         help="Output markdown filename",
     )
     return parser.parse_args(argv)
+
+
+def generate_toc_config(root: Path, patterns: list[str]) -> int:
+    """Generate a starter .bundler.toc configuration file.
+
+    Args:
+        root (Path):
+            Root directory to scan for files.
+        patterns (list[str]):
+            Glob patterns to match files.
+
+    Returns:
+        int:
+            Exit code (0 for success).
+    """
+    # Create a temporary bundler to collect files
+    temp_bundler = PyBundler(root, patterns=patterns, include_hidden=False)
+    files = temp_bundler.collect_files()
+    
+    if not files:
+        print("No files found matching the patterns. Cannot generate TOC config.")
+        return 1
+    
+    # Collect unique top-level entries
+    toc_entries = set()
+    for f in files:
+        try:
+            rel = f.relative_to(root)
+        except Exception:
+            rel = f.name
+        rel_str = str(rel)
+        
+        # Use top-level folder for files in subdirectories
+        if '/' in rel_str:
+            top_level = rel_str.split('/')[0]
+        else:
+            top_level = rel_str
+        
+        toc_entries.add(top_level)
+    
+    # Generate the .bundler.toc file
+    toc_file = root / ".bundler.toc"
+    
+    with open(toc_file, 'w', encoding='utf-8') as f:
+        f.write("# Bundler Table of Contents Configuration\n")
+        f.write("# Format: name: Description of what this folder/file contains\n")
+        f.write("# Lines starting with # are comments and ignored\n")
+        f.write("# \n")
+        f.write("# This file helps generate descriptive table of contents when using --toc\n")
+        f.write("# Edit the descriptions below to customize your TOC entries\n")
+        f.write("\n")
+        
+        for entry in sorted(toc_entries):
+            f.write(f"{entry}: \n")
+    
+    print(f"Generated starter .bundler.toc file with {len(toc_entries)} entries.")
+    print("Edit the file to add descriptions for each folder/file.")
+    print("Then run with --toc to generate a bundle with descriptions.")
+    
+    return 0
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -390,6 +516,10 @@ def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
     root = Path(args.root)
     patterns = [p.strip() for p in args.patterns.split(",") if p.strip()]
+
+    # Handle TOC config generation
+    if args.generate_toc_config:
+        return generate_toc_config(root, patterns)
 
     bundler = PyBundler(
         root,
