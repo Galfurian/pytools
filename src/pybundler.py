@@ -12,10 +12,105 @@ from __future__ import annotations
 
 import argparse
 import json
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 
 DEFAULT_CONFIG_FILENAME = ".bundler.config"
+
+
+@dataclass
+class Config:
+    """Configuration for pybundler containing patterns and TOC descriptions."""
+
+    patterns: list[str]
+    toc_descriptions: dict[str, str]
+
+    @classmethod
+    def load_from_files(cls, root: Path, config_files: list[str]) -> Config:
+        """Load configuration from config files.
+
+        Args:
+            root (Path): Root directory containing config files.
+            config_files (list[str]): List of config filenames to check.
+
+        Returns:
+            Config: Loaded configuration.
+        """
+        patterns_list: list[str] = []
+        descriptions: dict[str, str] = {}
+
+        for config_filename in config_files:
+            config_file = root / config_filename
+
+            if not config_file.exists():
+                continue
+
+            try:
+                with open(config_file, "r", encoding="utf-8") as f:
+                    current_section = None
+                    current_patterns: list[str] = []
+
+                    for line in f:
+                        line = line.strip()
+                        if not line or line.startswith("#"):
+                            continue
+
+                        # Section headers
+                        if line.endswith(":") and not ":" in line[:-1]:
+                            current_section = line[:-1].lower()
+                            continue
+
+                        # Parse patterns - list format only
+                        if current_section == "patterns":
+                            if line.startswith("- "):
+                                pattern = line[2:].strip()
+                                if pattern:
+                                    current_patterns.append(pattern)
+
+                        # Parse key-value pairs for TOC
+                        elif current_section == "toc":
+                            if ":" in line:
+                                key, description = line.split(":", 1)
+                                key = key.strip()
+                                description = description.strip()
+
+                                if key and description:
+                                    descriptions[key.lower()] = description
+
+                    # Merge patterns from this file (later files override)
+                    if current_patterns:
+                        patterns_list = current_patterns
+
+            except Exception as e:
+                print(f"Warning: Could not read {config_filename} file: {e}")
+
+        return cls(patterns=patterns_list, toc_descriptions=descriptions)
+
+    def save_to_file(self, config_file: Path) -> None:
+        """Save configuration to a file.
+
+        Args:
+            config_file (Path): Path to save the config file.
+        """
+        with open(config_file, "w", encoding="utf-8") as f:
+            f.write("# Bundler Configuration File\n")
+            f.write(
+                "# This file defines default patterns and TOC descriptions for your project\n"
+            )
+            f.write("# \n")
+            f.write("# Patterns section: list of glob patterns to include by default\n")
+            f.write("patterns:\n")
+            for pattern in self.patterns:
+                f.write(f"  - {pattern}\n")
+            f.write("# \n")
+            f.write(
+                "# TOC section: descriptions for folders/files in table of contents\n"
+            )
+            f.write("toc:\n")
+            for entry in sorted(self.toc_descriptions.keys()):
+                description = self.toc_descriptions[entry]
+                f.write(f"  {entry}: {description}\n")
 
 
 def _is_hidden_path(path: Path) -> bool:
@@ -203,7 +298,7 @@ def _is_valid_pattern(root: Path, pattern: str) -> tuple[bool, list[Path]]:
     return False, []
 
 
-def __generate_config(
+def _generate_config(
     root: Path,
     patterns: list[str],
     config_filename: str = DEFAULT_CONFIG_FILENAME,
@@ -242,7 +337,7 @@ def __generate_config(
         return 1
 
     # Collect TOC entries based on valid pattern types
-    toc_entries = set()
+    toc_descriptions = {}
 
     # Analyze each valid pattern to determine TOC entries
     for pattern in valid_patterns:
@@ -251,10 +346,10 @@ def __generate_config(
             dir_name = pattern.rstrip("/*")
             if "/" in dir_name:
                 # For nested directories like "player/**", add "player"
-                toc_entries.add(dir_name.split("/")[0])
+                toc_descriptions[dir_name.split("/")[0]] = ""
             else:
                 # For top-level directories like "journal/**", add "journal"
-                toc_entries.add(dir_name)
+                toc_descriptions[dir_name] = ""
         elif "*" in pattern or "?" in pattern:
             # Glob pattern - collect what it actually matches and add top-level entries
             for f in all_files:
@@ -264,46 +359,31 @@ def __generate_config(
                     rel = f.name
                 rel_str = str(rel)
                 if "/" in rel_str:
-                    toc_entries.add(rel_str.split("/")[0])
+                    toc_descriptions[rel_str.split("/")[0]] = ""
                 else:
-                    toc_entries.add(rel_str)
+                    toc_descriptions[rel_str] = ""
         else:
             # Specific path - check if it's a file or directory
             path_obj = root / pattern
             if path_obj.exists():
                 if path_obj.is_file():
                     # Specific file
-                    toc_entries.add(pattern)
+                    toc_descriptions[pattern] = ""
                 elif path_obj.is_dir():
                     # Directory path - add directory name without trailing slash
                     dir_name = pattern.rstrip("/")
                     if "/" in dir_name:
-                        toc_entries.add(dir_name.split("/")[0])
+                        toc_descriptions[dir_name.split("/")[0]] = ""
                     else:
-                        toc_entries.add(dir_name)
+                        toc_descriptions[dir_name] = ""
 
-    # Generate the config file
+    # Create config object and save it
+    config = Config(patterns=valid_patterns, toc_descriptions=toc_descriptions)
     config_file = root / config_filename
-
-    with open(config_file, "w", encoding="utf-8") as f:
-        f.write("# Bundler Configuration File\n")
-        f.write(
-            "# This file defines default patterns and TOC descriptions for your project\n"
-        )
-        f.write("# \n")
-        f.write("# Patterns section: list of glob patterns to include by default\n")
-        f.write("patterns:\n")
-        for pattern in valid_patterns:
-            f.write(f"  - {pattern}\n")
-        f.write("# \n")
-        f.write("# TOC section: descriptions for folders/files in table of contents\n")
-        f.write("toc:\n")
-
-        for entry in sorted(toc_entries):
-            f.write(f"  {entry}: \n")
+    config.save_to_file(config_file)
 
     print(
-        f"Generated starter {config_filename} file with {len(valid_patterns)} patterns and {len(toc_entries)} TOC entries."
+        f"Generated starter {config_filename} file with {len(valid_patterns)} patterns and {len(toc_descriptions)} TOC entries."
     )
     print("Edit the file to customize patterns and add descriptions.")
     print("Then run with --toc to generate bundles with descriptions.")
@@ -374,10 +454,12 @@ class PyBundler:
         self.root = Path(root)
         self.config_files = config_files or [DEFAULT_CONFIG_FILENAME]
 
-        # Load patterns from config if none provided
+        # Load config from files
+        config = Config.load_from_files(self.root, self.config_files)
+
+        # Use provided patterns or load from config
         if patterns is None:
-            config_patterns = self._load_config_patterns()
-            self.patterns = config_patterns if config_patterns else ["**/*.*"]
+            self.patterns = config.patterns if config.patterns else ["**/*.*"]
         else:
             self.patterns = patterns
 
@@ -385,105 +467,8 @@ class PyBundler:
         self.include_hidden = include_hidden
         self.warn_size = warn_size
         self.generate_toc = generate_toc
-        self.toc_descriptions = self._load_toc_descriptions()
+        self.toc_descriptions = config.toc_descriptions
         self.output_lines: list[str] = []
-
-    def _load_toc_descriptions(self) -> dict[str, str]:
-        """Load TOC descriptions from config files.
-
-        Supports the .bundler.config format with toc section containing
-        name: description entries.
-
-        Returns:
-            dict[str, str]:
-                Mapping of filenames/folders to their descriptions.
-        """
-        descriptions = {}
-
-        for config_filename in self.config_files:
-            config_file = self.root / config_filename
-
-            if not config_file.exists():
-                continue
-
-            try:
-                with open(config_file, "r", encoding="utf-8") as f:
-                    current_section = None
-                    for line in f:
-                        line = line.strip()
-                        if not line or line.startswith("#"):
-                            continue
-
-                        # Section headers
-                        if line.endswith(":") and not ":" in line[:-1]:
-                            current_section = line[:-1].lower()
-                            continue
-
-                        # Parse key-value pairs
-                        if ":" in line and current_section == "toc":
-                            key, description = line.split(":", 1)
-                            key = key.strip()
-                            description = description.strip()
-
-                            if key and description:
-                                descriptions[key.lower()] = description
-
-            except Exception as e:
-                print(f"Warning: Could not read {config_filename} file: {e}")
-
-        return descriptions
-
-    def _load_config_patterns(self) -> list[str] | None:
-        """Load default patterns from config files.
-
-        Iterates through config files in order, with later files overriding earlier ones.
-
-        Returns:
-            list[str] | None:
-                List of default patterns, or None if not found.
-        """
-        for config_filename in self.config_files:
-            config_file = self.root / config_filename
-
-            if not config_file.exists():
-                continue
-
-            try:
-                with open(config_file, "r", encoding="utf-8") as f:
-                    current_section = None
-                    patterns_list: list[str] = []
-
-                    for line in f:
-                        line = line.strip()
-                        if not line or line.startswith("#"):
-                            continue
-
-                        # Section headers
-                        if line.endswith(":") and not ":" in line[:-1]:
-                            current_section = line[:-1].lower()
-                            continue
-
-                        # Parse patterns - list format only
-                        if current_section == "patterns":
-                            if line.startswith("- "):
-                                pattern = line[2:].strip()
-                                if pattern:
-                                    patterns_list.append(pattern)
-
-                        # When we exit the patterns section, return any collected patterns
-                        elif current_section != "patterns" and patterns_list:
-                            return patterns_list
-
-                    # Return patterns if we found any at the end of file
-                    if patterns_list:
-                        return patterns_list
-
-            except Exception as e:
-                print(
-                    f"Warning: Could not read patterns from {config_filename} file: {e}"
-                )
-
-        return None
 
     def add_header(self, title: str, level: int = 2) -> None:
         """Add a markdown header to the output.
@@ -746,7 +731,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.generate_config:
         # For config generation, we need actual patterns
         actual_patterns = patterns if patterns else ["**/*.*"]
-        return __generate_config(root, actual_patterns, args.generate_config)
+        return _generate_config(root, actual_patterns, args.generate_config)
 
     bundler = PyBundler(
         root,
