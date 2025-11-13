@@ -77,38 +77,72 @@ class Config:
                     current_excludes: list[str] = []
 
                     for line in f:
+                        original_line = line
                         line = line.strip()
                         if not line or line.startswith("#"):
                             continue
 
-                        # Section headers
-                        if line.endswith(":") and not ":" in line[:-1]:
-                            current_section = line[:-1].lower()
+                        # Section headers - assume they are not indented
+                        if line.endswith(":") and not original_line.startswith(" ") and ":" not in line[:-1]:
+                            section = line[:-1].lower()
+                            if section not in ["patterns", "exclude", "toc"]:
+                                logger.warning(
+                                    "Unknown section '%s' in config file %s. Ignoring.",
+                                    section, config_filename
+                                )
+                                current_section = None
+                            else:
+                                current_section = section
                             continue
 
                         # Parse patterns - list format only
                         if current_section == "patterns":
-                            if line.startswith("- "):
-                                pattern = line[2:].strip()
-                                if pattern:
-                                    current_patterns.append(pattern)
+                            if not line.startswith("- "):
+                                logger.error(
+                                    "Invalid line in 'patterns' section of %s: '%s'. Expected format: '- pattern'",
+                                    config_filename, line
+                                )
+                                continue
+                            pattern = line[2:].strip()
+                            if not pattern:
+                                logger.warning("Empty pattern in 'patterns' section of %s", config_filename)
+                                continue
+                            current_patterns.append(pattern)
 
                         # Parse exclude patterns - list format only
                         elif current_section == "exclude":
-                            if line.startswith("- "):
-                                pattern = line[2:].strip()
-                                if pattern:
-                                    current_excludes.append(pattern)
+                            if not line.startswith("- "):
+                                logger.error(
+                                    "Invalid line in 'exclude' section of %s: '%s'. Expected format: '- pattern'",
+                                    config_filename, line
+                                )
+                                continue
+                            pattern = line[2:].strip()
+                            if not pattern:
+                                logger.warning("Empty pattern in 'exclude' section of %s", config_filename)
+                                continue
+                            current_excludes.append(pattern)
 
                         # Parse key-value pairs for TOC
                         elif current_section == "toc":
-                            if ":" in line:
-                                key, description = line.split(":", 1)
-                                key = key.strip()
-                                description = description.strip()
-
-                                if key and description:
-                                    descriptions[key.lower()] = description
+                            if ":" not in line:
+                                logger.error(
+                                    "Invalid line in 'toc' section of %s: '%s'. Expected format: 'key: description'",
+                                    config_filename, line
+                                )
+                                continue
+                            key, description = line.split(":", 1)
+                            key = key.strip()
+                            description = description.strip()
+                            if not key:
+                                logger.warning("Empty key in 'toc' section of %s", config_filename)
+                                continue
+                            descriptions[key.lower()] = description
+                        else:
+                            logger.warning(
+                                "Line outside any section in %s: '%s'. Ignoring.",
+                                config_filename, line
+                            )
 
                     # Merge patterns from this file (later files override)
                     if current_patterns:
@@ -946,6 +980,13 @@ def main(argv: list[str] | None = None) -> int:
 
     # Get the root path.
     root = Path(args.root)
+
+    # Auto-generate default config if none exists and not explicitly generating
+    config_files = args.config or [DEFAULT_CONFIG_FILENAME]
+    config_exists = any((root / cf).exists() for cf in config_files)
+    if not config_exists and not args.generate_config:
+        logger.info("No config file found. Generating default %s", DEFAULT_CONFIG_FILENAME)
+        _generate_config(root, ["**/*.*"], DEFAULT_CONFIG_FILENAME, [])
 
     # Parse patterns - use None if default was used (to allow config loading)
     patterns_arg = args.patterns
