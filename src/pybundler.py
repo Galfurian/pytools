@@ -83,12 +83,17 @@ class Config:
                             continue
 
                         # Section headers - assume they are not indented
-                        if line.endswith(":") and not original_line.startswith(" ") and ":" not in line[:-1]:
+                        if (
+                            line.endswith(":")
+                            and not original_line.startswith(" ")
+                            and ":" not in line[:-1]
+                        ):
                             section = line[:-1].lower()
                             if section not in ["patterns", "exclude", "toc"]:
                                 logger.warning(
                                     "Unknown section '%s' in config file %s. Ignoring.",
-                                    section, config_filename
+                                    section,
+                                    config_filename,
                                 )
                                 current_section = None
                             else:
@@ -100,12 +105,16 @@ class Config:
                             if not line.startswith("- "):
                                 logger.error(
                                     "Invalid line in 'patterns' section of %s: '%s'. Expected format: '- pattern'",
-                                    config_filename, line
+                                    config_filename,
+                                    line,
                                 )
                                 continue
                             pattern = line[2:].strip()
                             if not pattern:
-                                logger.warning("Empty pattern in 'patterns' section of %s", config_filename)
+                                logger.warning(
+                                    "Empty pattern in 'patterns' section of %s",
+                                    config_filename,
+                                )
                                 continue
                             current_patterns.append(pattern)
 
@@ -114,12 +123,16 @@ class Config:
                             if not line.startswith("- "):
                                 logger.error(
                                     "Invalid line in 'exclude' section of %s: '%s'. Expected format: '- pattern'",
-                                    config_filename, line
+                                    config_filename,
+                                    line,
                                 )
                                 continue
                             pattern = line[2:].strip()
                             if not pattern:
-                                logger.warning("Empty pattern in 'exclude' section of %s", config_filename)
+                                logger.warning(
+                                    "Empty pattern in 'exclude' section of %s",
+                                    config_filename,
+                                )
                                 continue
                             current_excludes.append(pattern)
 
@@ -128,20 +141,24 @@ class Config:
                             if ":" not in line:
                                 logger.error(
                                     "Invalid line in 'toc' section of %s: '%s'. Expected format: 'key: description'",
-                                    config_filename, line
+                                    config_filename,
+                                    line,
                                 )
                                 continue
                             key, description = line.split(":", 1)
                             key = key.strip()
                             description = description.strip()
                             if not key:
-                                logger.warning("Empty key in 'toc' section of %s", config_filename)
+                                logger.warning(
+                                    "Empty key in 'toc' section of %s", config_filename
+                                )
                                 continue
                             descriptions[key.lower()] = description
                         else:
                             logger.warning(
                                 "Line outside any section in %s: '%s'. Ignoring.",
-                                config_filename, line
+                                config_filename,
+                                line,
                             )
 
                     # Merge patterns from this file (later files override)
@@ -224,151 +241,93 @@ def _is_hidden_path(path: Path) -> bool:
     return False
 
 
+from pathlib import Path
+import fnmatch
+from typing import Optional
+
+
 def _collect_files(
     root: Path,
     patterns: list[str],
     include_hidden: bool = False,
-    max_file_size: int | None = None,
-    exclude_patterns: list[str] | None = None,
+    max_file_size: Optional[int] = None,
+    exclude_patterns: Optional[list[str]] = None,
 ) -> list[Path]:
-    """Collect all files matching the patterns under the root directory.
-
-    Filters out binary files, files exceeding size limits, and excluded patterns.
-
-    Args:
-        root (Path):
-            The root directory to search for files.
-        patterns (list[str]):
-            List of glob patterns to match files.
-        include_hidden (bool):
-            Whether to include hidden files and directories. Defaults to False.
-        max_file_size (int | None):
-            Maximum file size in bytes to include. If None, no size limit is applied.
-        exclude_patterns (list[str] | None):
-            List of glob patterns to exclude. Applied after inclusion patterns.
-
-    Returns:
-        list[Path]:
-            List of matching file paths, deduplicated and sorted.
     """
-    files: list[Path] = []
+    Collect files under `root` matching `patterns`, excluding hidden files,
+    oversized files, and those matching `exclude_patterns`.
+    """
     if not root.exists():
-        return files
+        return []
 
+    matched_files = set()
+
+    logger.debug("Collecting files from root: %s", root)
+    logger.debug("Using patterns: %s", patterns)
+    logger.debug("Exclude patterns: %s", exclude_patterns)
+    logger.debug("Include hidden: %s", include_hidden)
+    logger.debug("Max file size: %s", max_file_size)
+
+    logger.debug("Starting file collection...")
     for pattern in patterns:
-        if "*" not in pattern and "?" not in pattern:
-            # Handle directory patterns - convert to "**" to match all files
-            if pattern.endswith("/"):
-                pattern = pattern + "**/*.*"
-            else:
-                # Check if this is a directory pattern without trailing slash
-                path_obj = root / pattern
-                if path_obj.exists() and path_obj.is_dir():
-                    pattern = pattern + "/**/*.*"
-
-        logger.debug(
-            f"Collecting files for pattern: {(root / pattern).relative_to(root)}"
-        )
-
-        for path in root.rglob(pattern):
-
-            resolved = path.resolve()
-            relative = path.relative_to(root)
-
-            if not resolved.is_file():
+        for path in root.glob(pattern):
+            if not path.is_file():
                 continue
 
-            # Skip hidden files/directories unless explicitly included
-            if not include_hidden and _is_hidden_path(resolved):
+            # Exclude hidden files or folders
+            if not include_hidden and any(part.startswith(".") for part in path.parts):
                 continue
 
-            # Skip files that are too large (if limit is enabled)
+            # Exclude oversized files
             if max_file_size is not None:
                 try:
-                    if resolved.stat().st_size > max_file_size:
+                    if path.stat().st_size > max_file_size:
                         continue
                 except OSError:
                     continue
 
-            # Skip files matching exclude patterns
+            # Exclude based on patterns
             if exclude_patterns:
-                excluded = False
-                rel_str = str(relative)
-                for exclude_pat in exclude_patterns:
-                    # Handle directory exclusions (patterns ending with / or containing / without globs)
-                    if exclude_pat.endswith("/") or (
-                        "/" in exclude_pat
-                        and not ("*" in exclude_pat or "?" in exclude_pat)
-                    ):
-                        # Directory exclusion - exclude anything under this path
-                        exclude_path = exclude_pat.rstrip("/")
-                        if (
-                            rel_str.startswith(exclude_path + "/")
-                            or rel_str == exclude_path
-                        ):
-                            excluded = True
-                            break
-                    else:
-                        # File or glob pattern - use fnmatch on both full path and filename
-                        if fnmatch.fnmatch(rel_str, exclude_pat) or fnmatch.fnmatch(
-                            path.name, exclude_pat
-                        ):
-                            excluded = True
-                            break
-                if excluded:
+                rel_path = str(path.relative_to(root))
+                if any(
+                    fnmatch.fnmatch(rel_path, pat)
+                    or fnmatch.fnmatch(path.name, pat)
+                    or pat in path.parts
+                    for pat in exclude_patterns
+                ):
                     continue
 
-            logger.debug(f"  Adding file: {relative}")
-            files.append(path)
+            matched_files.add(path.resolve())
+            
+            logger.debug("  Include: %s", path)
 
-    # Deduplicate and sort by path
-    unique = sorted(
-        {p.resolve(): p for p in files}.values(), key=lambda p: str(p.relative_to(root))
-    )
-    return unique
+    return sorted(matched_files)
 
 
 def _is_valid_pattern(
     root: Path, pattern: str, exclude_patterns: list[str] | None = None
 ) -> tuple[bool, list[Path]]:
-    """Check if a pattern is valid and return any matching files.
+    """Check if a pattern is valid and return any matching files."""
+    root = root.resolve()
 
-    Args:
-        root (Path):
-            The root directory to check against.
-        pattern (str):
-            The pattern to validate.
+    # Normalize directory patterns
+    if not any(c in pattern for c in "*?[]"):
+        path_obj = root / pattern
+        if path_obj.exists():
+            return True, []
+        # If it's a directory, try to match files inside
+        if path_obj.is_dir():
+            pattern = pattern.rstrip("/") + "/**"
 
-    Returns:
-        tuple[bool, list[Path]]:
-            Tuple of (is_valid, files) where is_valid indicates if the pattern is valid
-            and files contains any matching files found.
-    """
-    # Handle directory patterns that end with "/" - convert to "**" for file matching
-    if pattern.endswith("/") and "*" not in pattern and "?" not in pattern:
-        actual_pattern = pattern + "**"
-    else:
-        actual_pattern = pattern
-
-    # Check if pattern matches any files
     files = _collect_files(
         root,
-        [actual_pattern],
+        [pattern],
         include_hidden=False,
         max_file_size=None,
         exclude_patterns=exclude_patterns,
     )
-    if files:
-        return True, files
 
-    # If no files found, check if it's a valid path
-    if not ("*" in pattern or "?" in pattern):
-        # For non-glob patterns, check if the path exists (file or directory)
-        path_obj = root / pattern
-        if path_obj.exists():
-            return True, []
-
-    return False, []
+    return (bool(files), files)
 
 
 def _generate_config(
@@ -628,6 +587,9 @@ class PyBundler:
                 self.include_hidden,
                 self.max_file_size,
                 self.exclude_patterns,
+            )
+            logger.info(
+                "Collected %d files matching the specified patterns.", len(self._files)
             )
 
         warnings: list[str] = []
@@ -981,11 +943,17 @@ def main(argv: list[str] | None = None) -> int:
     # Get the root path.
     root = Path(args.root)
 
+    if not root.exists():
+        logger.error("Root directory '%s' does not exist.", root)
+        return 1
+
     # Auto-generate default config if none exists and not explicitly generating
     config_files = args.config or [DEFAULT_CONFIG_FILENAME]
     config_exists = any((root / cf).exists() for cf in config_files)
     if not config_exists and not args.generate_config:
-        logger.info("No config file found. Generating default %s", DEFAULT_CONFIG_FILENAME)
+        logger.info(
+            "No config file found. Generating default %s", DEFAULT_CONFIG_FILENAME
+        )
         _generate_config(root, ["**/*.*"], DEFAULT_CONFIG_FILENAME, [])
 
     # Parse patterns - use None if default was used (to allow config loading)
@@ -999,6 +967,55 @@ def main(argv: list[str] | None = None) -> int:
     exclude_patterns = None
     if hasattr(args, "exclude") and args.exclude:
         exclude_patterns = [p.strip() for p in args.exclude.split(",") if p.strip()]
+
+    # Validate patterns if provided
+    if patterns:
+        for pattern in patterns:
+            is_valid, _ = _is_valid_pattern(root, pattern, exclude_patterns)
+            if not is_valid:
+                logger.warning(
+                    "Pattern '%s' does not match any files or valid paths.", pattern
+                )
+                if not ("*" in pattern or "?" in pattern):
+                    path_part = pattern.split("/")[0] if "/" in pattern else pattern
+                    if not (root / path_part).exists():
+                        logger.info(
+                            "Suggestion: Directory or file '%s' does not exist under root. Check the path.",
+                            path_part,
+                        )
+                    else:
+                        logger.info(
+                            "Suggestion: The path exists but no files match. For directories, append '/**' to include subfiles."
+                        )
+                else:
+                    logger.info(
+                        "Suggestion: No files match the glob pattern. Try a broader pattern like '**/*.*' or check for typos."
+                    )
+
+    # Validate exclude patterns if provided
+    if exclude_patterns:
+        for pattern in exclude_patterns:
+            is_valid, _ = _is_valid_pattern(root, pattern, None)
+            if not is_valid:
+                logger.warning(
+                    "Exclude pattern '%s' does not match any files or valid paths.",
+                    pattern,
+                )
+                if not ("*" in pattern or "?" in pattern):
+                    path_part = pattern.split("/")[0] if "/" in pattern else pattern
+                    if not (root / path_part).exists():
+                        logger.info(
+                            "Suggestion: Exclude directory or file '%s' does not exist under root. Check the path.",
+                            path_part,
+                        )
+                    else:
+                        logger.info(
+                            "Suggestion: The exclude path exists but no files match. For directories, append '/**' to exclude subfiles."
+                        )
+                else:
+                    logger.info(
+                        "Suggestion: No files match the exclude glob pattern. It may be unnecessary or check for typos."
+                    )
 
     # Handle config generation
     if args.generate_config:
