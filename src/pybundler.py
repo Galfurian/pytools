@@ -98,6 +98,7 @@ def _extract_config_sections(path: Path) -> dict[str, list[str]] | None:
     Returns:
         Dict of section names to list of lines, or None if error.
     """
+    valid_sections = {"patterns", "excludes", "toc"}
     try:
         with open(path, "r", encoding="utf-8") as f:
             current_section = None
@@ -116,15 +117,15 @@ def _extract_config_sections(path: Path) -> dict[str, list[str]] | None:
                     and ":" not in line[:-1]
                 ):
                     section = line[:-1].lower()
-                    if section not in ["patterns", "excludes", "toc"]:
+                    if section in valid_sections:
+                        current_section = section
+                    else:
                         logger.warning(
                             "Unknown section '%s' in config file %s. Ignoring.",
                             section,
                             path,
                         )
                         current_section = None
-                    else:
-                        current_section = section
                     continue
 
                 if current_section:
@@ -332,43 +333,67 @@ def _generate_config_toc_entries(
     toc = {}
 
     for pattern in valid_patterns:
-        # If pattern ends with /** or /*, it's a directory pattern - add directory name
         if pattern.endswith("/**") or pattern.endswith("/*"):
-            dir_name = pattern.rstrip("/*")
-            if "/" in dir_name:
-                # For nested directory patterns, add the top-level directory name
-                toc[dir_name.split("/")[0]] = ""
-            else:
-                # For top-level directory patterns, add the directory name
-                toc[dir_name] = ""
+            _add_directory_toc_entry(toc, pattern.rstrip("/*"))
         elif "*" in pattern or "?" in pattern:
-            # Glob pattern - collect what it actually matches and add top-level entries
-            for f in all_files:
-                try:
-                    rel = f.relative_to(root)
-                except Exception:
-                    rel = f.name
-                rel_str = str(rel)
-                if "/" in rel_str:
-                    toc[rel_str.split("/")[0]] = ""
-                else:
-                    toc[rel_str] = ""
+            _add_glob_toc_entries(toc, all_files, root)
         else:
-            # Specific path - check if it's a file or directory
-            path_obj = root / pattern
-            if path_obj.exists():
-                if path_obj.is_file():
-                    # Specific file
-                    toc[pattern] = ""
-                elif path_obj.is_dir():
-                    # Directory path - add directory name without trailing slash
-                    dir_name = pattern.rstrip("/")
-                    if "/" in dir_name:
-                        toc[dir_name.split("/")[0]] = ""
-                    else:
-                        toc[dir_name] = ""
+            _add_specific_toc_entry(toc, root, pattern)
 
     return toc
+
+
+def _add_directory_toc_entry(toc: dict[str, str], dir_name: str) -> None:
+    """Add a directory entry to TOC.
+
+    Args:
+        toc: The TOC dict to update.
+        dir_name: Directory name.
+    """
+    if "/" in dir_name:
+        toc[dir_name.split("/")[0]] = ""
+    else:
+        toc[dir_name] = ""
+
+
+def _add_glob_toc_entries(toc: dict[str, str], all_files: set[Path], root: Path) -> None:
+    """Add TOC entries for glob patterns.
+
+    Args:
+        toc: The TOC dict to update.
+        all_files: Set of all files.
+        root: Root path.
+    """
+    for f in all_files:
+        try:
+            rel = f.relative_to(root)
+        except Exception:
+            rel = f.name
+        rel_str = str(rel)
+        if "/" in rel_str:
+            toc[rel_str.split("/")[0]] = ""
+        else:
+            toc[rel_str] = ""
+
+
+def _add_specific_toc_entry(toc: dict[str, str], root: Path, pattern: str) -> None:
+    """Add a specific path entry to TOC.
+
+    Args:
+        toc: The TOC dict to update.
+        root: Root path.
+        pattern: The pattern.
+    """
+    path_obj = root / pattern
+    if path_obj.exists():
+        if path_obj.is_file():
+            toc[pattern] = ""
+        elif path_obj.is_dir():
+            dir_name = pattern.rstrip("/")
+            if "/" in dir_name:
+                toc[dir_name.split("/")[0]] = ""
+            else:
+                toc[dir_name] = ""
 
 
 def _generate_config(
@@ -654,16 +679,31 @@ class PyBundler:
 
         self.add_header("Table of Contents", level=2)
 
-        # Collect unique entries - individual files with descriptions get their own entries
+        toc_entries, individual_files = self._collect_toc_entries()
+
+        # Generate TOC entries - individual files first, then grouped folders
+        all_entries = sorted(individual_files) + sorted(
+            toc_entries - set(entry.split("/")[0] for entry in individual_files)
+        )
+
+        for entry in all_entries:
+            description = self.toc.get(entry.lower()) if self.toc else None
+            if description:
+                self.add_text(f"- **{entry}** - {description}")
+            else:
+                self.add_text(f"- {entry}")
+
+    def _collect_toc_entries(self) -> tuple[set[str], set[str]]:
+        """Collect TOC entries from files.
+
+        Returns:
+            tuple[set[str], set[str]]: (toc_entries, individual_files)
+        """
         toc_entries = set()
         individual_files = set()
 
         for f in self._files:
-            try:
-                rel = f.relative_to(self.root)
-            except Exception:
-                rel = f.name
-            rel_str = str(rel)
+            rel_str = self._get_relative_path_str(f)
 
             # Check if this specific file has a description
             if self.toc and self.toc.get(rel_str.lower()):
@@ -676,20 +716,7 @@ class PyBundler:
                     top_level = rel_str
                 toc_entries.add(top_level)
 
-        # Generate TOC entries - individual files first, then grouped folders
-        all_entries = sorted(individual_files) + sorted(
-            toc_entries - set(entry.split("/")[0] for entry in individual_files)
-        )
-
-        for entry in all_entries:
-            description = None
-            if self.toc:
-                description = self.toc.get(entry.lower())
-
-            if description:
-                self.add_text(f"- **{entry}** - {description}")
-            else:
-                self.add_text(f"- {entry}")
+        return toc_entries, individual_files
 
     def _add_file_content(self, f: Path, header_level: int) -> None:
         """Add a single file's content to the output.
@@ -735,13 +762,9 @@ class PyBundler:
             return
 
         # Calculate directory statistics
-        total_size = 0
-        for f in dir_files:
-            try:
-                if f.exists():
-                    total_size += f.stat().st_size
-            except OSError:
-                pass
+        total_size = sum(
+            f.stat().st_size for f in dir_files if f.exists()
+        )
         dir_name = dir_pattern.rstrip("/")
 
         # Create directory header
@@ -950,6 +973,21 @@ def _log_bundle_stats(output: Path) -> None:
     )
 
 
+def _format_patterns_display(patterns: list[str]) -> str:
+    """Format patterns list for display.
+
+    Args:
+        patterns: List of patterns.
+
+    Returns:
+        str: Formatted display string.
+    """
+    if len(patterns) <= 3:
+        return str(patterns)
+    else:
+        return f"[{patterns[0]}, {patterns[1]}, {patterns[2]}, ...] ({len(patterns)} total)"
+
+
 def main(argv: list[str] | None = None) -> int:
     """Main entry point for the pybundler command-line tool.
 
@@ -992,12 +1030,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     out_path = Path(args.output)
 
-    # Format patterns for display
-    if len(bundler.patterns) <= 3:
-        patterns_display = str(bundler.patterns)
-    else:
-        patterns_display = f"[{bundler.patterns[0]}, {bundler.patterns[1]}, {bundler.patterns[2]}, ...] ({len(bundler.patterns)} total)"
-
+    patterns_display = _format_patterns_display(bundler.patterns)
     logger.info("Bundling files from %s using patterns: %s", root, patterns_display)
 
     output = bundler.bundle(out_path)
