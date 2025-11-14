@@ -513,19 +513,6 @@ class PyBundler:
                 Tuple of (files, warnings) where warnings contains messages for files
                 exceeding the warn_size threshold.
         """
-        # Ensure we have collected files first (callers may call this before bundle())
-        if not self._files:
-            self._files = _collect_files(
-                self.root,
-                self.patterns,
-                self.include_hidden,
-                self.max_file_size,
-                self.excludes,
-            )
-            logger.info(
-                "Collected %d files matching the specified patterns.", len(self._files)
-            )
-
         warnings: list[str] = []
         for f in self._files:
             try:
