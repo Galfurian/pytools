@@ -399,12 +399,15 @@ def size_bar(
         bar = "█" * filled + "░" * (width - filled)
         # Color the bar based on size ratio
         if use_color:
-            if ratio >= 0.8:
-                bar = colored(bar, "31")  # Red for large items
-            elif ratio >= 0.6:
-                bar = colored(bar, "33")  # Yellow for medium items
-            elif ratio >= 0.3:
-                bar = colored(bar, "32")  # Green for small items
+            color_map = {
+                0.8: "31",  # Red for large items
+                0.6: "33",  # Yellow for medium items
+                0.3: "32",  # Green for small items
+            }
+            for threshold, color in color_map.items():
+                if ratio >= threshold:
+                    bar = colored(bar, color)
+                    break
             else:
                 bar = colored(bar, "90")  # Gray for very small items
     else:
@@ -430,6 +433,40 @@ def process_patterns(patterns):
     for pattern in patterns:
         processed_patterns.extend(pattern.split(","))
     return [pattern.strip() for pattern in processed_patterns if pattern.strip()]
+
+
+def _create_node_from_stat(
+    name: str,
+    depth: int,
+    stat_result: os.stat_result,
+    parent: TreeNode | None,
+    node_type: NodeType,
+) -> TreeNode:
+    """Create a TreeNode from stat result.
+
+    Args:
+        name (str): Node name.
+        depth (int): Depth.
+        stat_result (os.stat_result): Stat result.
+        parent (TreeNode | None): Parent node.
+        node_type (NodeType): Type of node.
+
+    Returns:
+        TreeNode: The created node.
+    """
+    return TreeNode(
+        name=name,
+        depth=depth,
+        size=stat_result.st_size,
+        original_size=stat_result.st_size,
+        mtime=stat_result.st_mtime,
+        mode=stat_result.st_mode,
+        uid=stat_result.st_uid,
+        gid=stat_result.st_gid,
+        children=[],
+        parent=parent,
+        node_type=node_type,
+    )
 
 
 def build_tree(
@@ -475,47 +512,22 @@ def build_tree(
         with os.scandir(path) as it:
             for entry in it:
                 lstat = entry.stat(follow_symlinks=False)
-
                 progress_callback()
 
                 if entry.is_symlink():
                     # Count symlink size but don't traverse
-                    node.size += lstat.st_size
-                    node.children.append(
-                        TreeNode(
-                            name=entry.name,
-                            depth=depth + 1,
-                            size=lstat.st_size,
-                            original_size=lstat.st_size,
-                            mtime=lstat.st_mtime,
-                            mode=lstat.st_mode,
-                            uid=lstat.st_uid,
-                            gid=lstat.st_gid,
-                            children=[],
-                            parent=node,
-                            node_type=NodeType.SYMLINK,
-                        )
+                    child = _create_node_from_stat(
+                        entry.name, depth + 1, lstat, node, NodeType.SYMLINK
                     )
+                    node.size += child.size
+                    node.children.append(child)
 
                 elif entry.is_file():
-                    file_size = lstat.st_size
-                    file_mtime = lstat.st_mtime
-                    node.size += file_size
-                    node.children.append(
-                        TreeNode(
-                            name=entry.name,
-                            depth=depth + 1,
-                            size=file_size,
-                            original_size=file_size,
-                            mtime=file_mtime,
-                            mode=lstat.st_mode,
-                            uid=lstat.st_uid,
-                            gid=lstat.st_gid,
-                            children=[],
-                            parent=node,
-                            node_type=NodeType.FILE,
-                        )
+                    child = _create_node_from_stat(
+                        entry.name, depth + 1, lstat, node, NodeType.FILE
                     )
+                    node.size += child.size
+                    node.children.append(child)
 
                 elif entry.is_dir():
                     sub_node = build_tree(
@@ -689,6 +701,46 @@ def sort_key_name(node: TreeNode) -> str:
     return node.name
 
 
+def _format_node_line(node: TreeNode, args) -> str:
+    """Format the line for a node.
+
+    Args:
+        node (TreeNode): The node to format.
+        args: Parsed arguments.
+
+    Returns:
+        str: The formatted line.
+    """
+    # Format size with optional coloring
+    if node.original_size != node.size:
+        node_size = f"{color_size(node.size, args.human_readable, args.color)} ({color_size(node.original_size, args.human_readable, args.color)})"
+    else:
+        node_size = color_size(node.size, args.human_readable, args.color)
+
+    # Get the parent total size if not provided.
+    parent_size = node.parent.size if node.parent else node.size
+
+    # Add size bar if enabled.
+    bar_str = ""
+    if args.size_bars:
+        bar_str = f"{size_bar(node.size, parent_size, 10, args.color)} "
+
+    # Print current item.
+    colored_name = color_name(node.name, node.node_type, args.color)
+    details_str = ""
+    if args.details:
+        try:
+            owner = pwd.getpwuid(node.uid).pw_name
+            group = grp.getgrgid(node.gid).gr_name
+            perms = stat.filemode(node.mode)
+            mtime_str = time.strftime("%Y-%m-%d %H:%M", time.localtime(node.mtime))
+            details_str = f" [{perms} {owner} {group} {mtime_str}]"
+        except KeyError:
+            details_str = f" [{stat.filemode(node.mode)} {node.uid} {node.gid} {time.strftime('%Y-%m-%d %H:%M', time.localtime(node.mtime))}]"
+    suffix = "/" if node.node_type == NodeType.DIRECTORY else ""
+    return f"{bar_str}{colored_name}{suffix}{details_str} {node_size}"
+
+
 def print_tree(
     node: TreeNode,
     args,
@@ -722,38 +774,8 @@ def print_tree(
         new_prefix = prefix + ("   " if is_last else "│  ")
         line_prefix = prefix + ("└─ " if is_last else "├─ ")
 
-    # Format size with optional coloring
-    if node.original_size != node.size:
-        node_size = f"{color_size(node.size, args.human_readable, args.color)} ({color_size(node.original_size, args.human_readable, args.color)})"
-    else:
-        node_size = color_size(node.size, args.human_readable, args.color)
-
-    # Get the parent total size if not provided.
-    parent_size = node.parent.size if node.parent else node.size
-
-    # Add size bar if enabled.
-    bar_str = ""
-    if args.size_bars:
-        bar_str = f"{size_bar(node.size, parent_size, 10, args.color)} "
-
-    # Print current item.
-    colored_name = color_name(node.name, node.node_type, args.color)
-    details_str = ""
-    if args.details:
-        try:
-            owner = pwd.getpwuid(node.uid).pw_name
-            group = grp.getgrgid(node.gid).gr_name
-            perms = stat.filemode(node.mode)
-            mtime_str = time.strftime("%Y-%m-%d %H:%M", time.localtime(node.mtime))
-            details_str = f" [{perms} {owner} {group} {mtime_str}]"
-        except KeyError:
-            details_str = f" [{stat.filemode(node.mode)} {node.uid} {node.gid} {time.strftime('%Y-%m-%d %H:%M', time.localtime(node.mtime))}]"
-    if node.node_type == NodeType.FILE:
-        print(f"{bar_str}{line_prefix}{colored_name}{details_str} {node_size}")
-    elif node.node_type == NodeType.SYMLINK:
-        print(f"{bar_str}{line_prefix}{colored_name}{details_str} {node_size}")
-    else:
-        print(f"{bar_str}{line_prefix}{colored_name}/{details_str} {node_size}")
+    line = _format_node_line(node, args)
+    print(f"{line_prefix}{line}")
 
     # Stop recursion if no children or max depth reached
     if node.node_type == NodeType.FILE or (
@@ -763,12 +785,13 @@ def print_tree(
 
     # Sort children based on criteria
     if node.children:
-        if args.sort_by == "size":
-            node.children.sort(key=sort_key_size, reverse=args.reverse)
-        elif args.sort_by == "mtime":
-            node.children.sort(key=sort_key_mtime, reverse=args.reverse)
-        else:  # name
-            node.children.sort(key=sort_key_name, reverse=args.reverse)
+        sort_keys = {
+            "size": sort_key_size,
+            "mtime": sort_key_mtime,
+            "name": sort_key_name,
+        }
+        sort_key = sort_keys.get(args.sort_by, sort_key_name)
+        node.children.sort(key=sort_key, reverse=args.reverse)
 
     # Recursively print children
     if node.children:
@@ -908,6 +931,47 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     return parser.parse_args(argv)
 
 
+def _setup_args_and_logging(args) -> None:
+    """Process arguments and set up logging.
+
+    Args:
+        args: Parsed arguments.
+    """
+    # Process comma-separated exclude and include patterns.
+    args.exclude = process_patterns(args.exclude)
+    args.include = process_patterns(args.include)
+
+    # Set up logging with color support.
+    handler = logging.StreamHandler()
+    handler.setFormatter(ColorFormatter("%(levelname)s: %(message)s"))
+    logger.addHandler(handler)
+    logger.setLevel(logging.INFO)
+
+    # Determine if colors should be used
+    args.color = args.color and sys.stdout.isatty()
+
+
+def _parse_filters(args) -> None:
+    """Parse size and time filters.
+
+    Args:
+        args: Parsed arguments.
+
+    Raises:
+        SystemExit: If parsing fails.
+    """
+    try:
+        if args.min_size:
+            args.min_size = parse_size(args.min_size)
+        if args.max_size:
+            args.max_size = parse_size(args.max_size)
+        if args.older_than:
+            args.older_than = parse_time_duration(args.older_than)
+    except ValueError:
+        logger.exception("Error parsing size or time arguments")
+        sys.exit(1)
+
+
 def main() -> None:
     """
     Main entry point for the mydu disk usage analyzer.
@@ -922,31 +986,8 @@ def main() -> None:
         None
     """
     args = parse_args()
-
-    # Process comma-separated exclude and include patterns.
-    args.exclude = process_patterns(args.exclude)
-    args.include = process_patterns(args.include)
-
-    # Set up logging with color support.
-    handler = logging.StreamHandler()
-    handler.setFormatter(ColorFormatter("%(levelname)s: %(message)s"))
-    logger.addHandler(handler)
-    logger.setLevel(logging.INFO)
-
-    # Determine if colors should be used
-    args.color = args.color and sys.stdout.isatty()
-
-    # Parse size filters with error handling.
-    try:
-        if args.min_size:
-            args.min_size = parse_size(args.min_size)
-        if args.max_size:
-            args.max_size = parse_size(args.max_size)
-        if args.older_than:
-            args.older_than = parse_time_duration(args.older_than)
-    except ValueError:
-        logger.exception("Error parsing size or time arguments")
-        sys.exit(1)
+    _setup_args_and_logging(args)
+    _parse_filters(args)
 
     # Get absolute path and scan directory
     abs_path = os.path.abspath(args.path)
