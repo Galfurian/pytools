@@ -77,7 +77,9 @@ def load_config_from_file(path: Path) -> Config | None:
     excludes = _load_config_list(
         section_lines.get("excludes", []), _parse_config_item, path, "excludes"
     )
-    toc_items = _load_config_list(section_lines.get("toc", []), _parse_config_toc_item, path, "toc")
+    toc_items = _load_config_list(
+        section_lines.get("toc", []), _parse_config_toc_item, path, "toc"
+    )
     toc = dict(toc_items)
 
     return Config(
@@ -270,11 +272,11 @@ def _collect_files(
             if not path.is_file():
                 continue
 
-            # Exclude hidden files or folders
+            # Skip hidden files if not included
             if not include_hidden and any(part.startswith(".") for part in path.parts):
                 continue
 
-            # Exclude oversized files
+            # Skip oversized files
             if max_file_size is not None:
                 try:
                     if path.stat().st_size > max_file_size:
@@ -282,22 +284,36 @@ def _collect_files(
                 except OSError:
                     continue
 
-            # Exclude based on patterns
-            if excludes:
-                rel_path = str(path.relative_to(root))
-                if any(
-                    fnmatch.fnmatch(rel_path, pat)
-                    or fnmatch.fnmatch(path.name, pat)
-                    or pat in path.parts
-                    for pat in excludes
-                ):
-                    continue
+            # Skip excluded files
+            if excludes and _is_excluded(path, root, excludes):
+                continue
 
             matched_files.add(path.resolve())
-
             logger.debug("    - %s", path)
 
     return sorted(matched_files)
+
+
+def _is_excluded(path: Path, root: Path, excludes: list[str]) -> bool:
+    """Check if a path should be excluded based on patterns.
+
+    Args:
+        path (Path): The file path to check.
+        root (Path): The root directory.
+        excludes (list[str]): List of exclude patterns.
+
+    Returns:
+        bool: True if the path matches any exclude pattern.
+    """
+    rel_path = str(path.relative_to(root))
+    for pat in excludes:
+        if (
+            fnmatch.fnmatch(rel_path, pat)
+            or fnmatch.fnmatch(path.name, pat)
+            or pat in path.parts
+        ):
+            return True
+    return False
 
 
 def _generate_config_toc_entries(
@@ -569,57 +585,61 @@ class PyBundler:
 
     def _group_files_by_directory(self) -> None:
         """Group files by directory patterns from self.patterns."""
-        # Identify directory patterns
-        directory_patterns = set()
-        for pattern in self.patterns:
-            # Check if pattern represents a directory
-            if "*" not in pattern and "?" not in pattern:
-                path_obj = self.root / pattern
-                if path_obj.exists() and path_obj.is_dir():
-                    # Normalize to include trailing slash
-                    dir_pattern = pattern.rstrip("/") + "/"
-                    directory_patterns.add(dir_pattern)
-            elif pattern.endswith("/") and "*" not in pattern and "?" not in pattern:
-                directory_patterns.add(pattern)
-            elif "**" in pattern:
-                # Handle glob patterns that represent directory structures
-                # e.g., "journal/**" -> "journal/"
-                # e.g., "test_journal/journal/**" -> "test_journal/journal/"
-                if pattern.endswith("/**"):
-                    dir_pattern = pattern[:-3] + "/"  # Remove /** and add /
-                    directory_patterns.add(dir_pattern)
-                elif "/**" in pattern:
-                    # Extract the directory part before /**
-                    dir_part = pattern.split("/**")[0]
-                    if dir_part:
-                        dir_pattern = dir_part.rstrip("/") + "/"
-                        directory_patterns.add(dir_pattern)
-
-        # Group files by matching directory patterns
+        directory_patterns = self._get_directory_patterns()
         self._files_by_directory.clear()
-        # Add the ungrouped key.
         self._files_by_directory[None] = []
 
         for file_path in self._files:
-            try:
-                rel_path = file_path.relative_to(self.root)
-            except Exception:
-                rel_path = file_path.name
-
-            rel_str = str(rel_path)
-
-            # Check if this file belongs to any directory pattern.
-            groupped = False
+            rel_str = self._get_relative_path_str(file_path)
+            grouped = False
             for dir_pattern in directory_patterns:
                 dir_path = dir_pattern.rstrip("/")
                 if rel_str.startswith(dir_path + "/") or rel_str == dir_path:
-                    if dir_pattern not in self._files_by_directory:
-                        self._files_by_directory[dir_pattern] = []
-                    self._files_by_directory[dir_pattern].append(file_path)
-                    groupped = True
+                    self._files_by_directory.setdefault(dir_pattern, []).append(
+                        file_path
+                    )
+                    grouped = True
                     break
-            if not groupped:
+            if not grouped:
                 self._files_by_directory[None].append(file_path)
+
+    def _get_directory_patterns(self) -> set[str]:
+        """Identify directory patterns from self.patterns.
+
+        Returns:
+            set[str]: Set of directory patterns.
+        """
+        directory_patterns = set()
+        for pattern in self.patterns:
+            if "*" not in pattern and "?" not in pattern:
+                path_obj = self.root / pattern
+                if path_obj.exists() and path_obj.is_dir():
+                    directory_patterns.add(pattern.rstrip("/") + "/")
+            elif pattern.endswith("/") and "*" not in pattern and "?" not in pattern:
+                directory_patterns.add(pattern)
+            elif "**" in pattern:
+                if pattern.endswith("/**"):
+                    directory_patterns.add(pattern[:-3] + "/")
+                elif "/**" in pattern:
+                    dir_part = pattern.split("/**")[0]
+                    if dir_part:
+                        directory_patterns.add(dir_part.rstrip("/") + "/")
+        return directory_patterns
+
+    def _get_relative_path_str(self, file_path: Path) -> str:
+        """Get relative path string for a file.
+
+        Args:
+            file_path (Path): The file path.
+
+        Returns:
+            str: Relative path as string.
+        """
+        try:
+            rel = file_path.relative_to(self.root)
+            return str(rel)
+        except Exception:
+            return file_path.name
 
     def _generate_toc(self) -> None:
         """Generate table of contents for the bundled files.
@@ -671,6 +691,75 @@ class PyBundler:
             else:
                 self.add_text(f"- {entry}")
 
+    def _add_file_content(self, f: Path, header_level: int) -> None:
+        """Add a single file's content to the output.
+
+        Args:
+            f (Path): The file to add.
+            header_level (int): The header level for the file.
+        """
+        try:
+            rel = f.relative_to(self.root)
+        except Exception:
+            rel = f.name
+
+        rel_str = str(rel)
+        # Get file size
+        try:
+            file_size = f.stat().st_size
+        except Exception:
+            file_size = 0
+
+        # Attempt to read file
+        try:
+            content = f.read_text(encoding="utf-8")
+        except Exception:
+            return
+
+        # Choose fenced block language by suffix
+        suffix = f.suffix.lower().lstrip(".")
+        fence_lang = suffix if suffix else "text"
+        self.add_header(f"File: `{rel_str}` (Size: {file_size} bytes)", header_level)
+        self.add_text(f"```{fence_lang}")
+        self.add_text(content.rstrip())
+        self.add_text("```")
+
+    def _process_directory_group(self, dir_pattern: str, dir_files: list[Path]) -> None:
+        """Process a group of files under a directory pattern.
+
+        Args:
+            dir_pattern (str): The directory pattern.
+            dir_files (list[Path]): List of files in this directory.
+        """
+        if not dir_files:
+            return
+
+        # Calculate directory statistics
+        total_size = 0
+        for f in dir_files:
+            try:
+                if f.exists():
+                    total_size += f.stat().st_size
+            except OSError:
+                pass
+        dir_name = dir_pattern.rstrip("/")
+
+        # Create directory header
+        self.add_header(
+            f"Folder: `{dir_name}/` (Files: {len(dir_files)}, Size: {total_size:,} bytes)",
+            level=2,
+        )
+
+        # Process files in this directory
+        for f in sorted(dir_files):
+            self._add_file_content(f, header_level=3)
+
+    def _process_ungrouped_files(self) -> None:
+        """Process files that are not grouped under directory headers."""
+        ungrouped_files = self._files_by_directory.get(None, [])
+        for f in ungrouped_files:
+            self._add_file_content(f, header_level=2)
+
     def bundle(
         self,
         output: Path,
@@ -717,84 +806,11 @@ class PyBundler:
 
         # Process grouped files (directory headers)
         for dir_pattern, dir_files in self._files_by_directory.items():
-            if dir_pattern is None:
-                continue  # Handle ungrouped files separately
-
-            if not dir_files:
-                continue
-
-            # Calculate directory statistics
-            total_size = 0
-            for f in dir_files:
-                try:
-                    if f.exists():
-                        total_size += f.stat().st_size
-                except OSError:
-                    pass
-            dir_name = dir_pattern.rstrip("/")
-
-            # Create directory header
-            self.add_header(
-                f"Folder: `{dir_name}/` (Files: {len(dir_files)}, Size: {total_size:,} bytes)",
-                level=2,
-            )
-
-            # Process files in this directory
-            for f in sorted(dir_files):
-                try:
-                    rel = f.relative_to(self.root)
-                except Exception:
-                    rel = f.name
-
-                rel_str = str(rel)
-                # Get file size
-                try:
-                    file_size = f.stat().st_size
-                except Exception:
-                    file_size = 0
-
-                # Attempt to read file
-                try:
-                    content = f.read_text(encoding="utf-8")
-                except Exception:
-                    continue
-
-                # Choose fenced block language by suffix
-                suffix = f.suffix.lower().lstrip(".")
-                fence_lang = suffix if suffix else "text"
-                self.add_header(f"File: `{rel_str}` (Size: {file_size} bytes)", level=3)
-                self.add_text(f"```{fence_lang}")
-                self.add_text(content.rstrip())
-                self.add_text("```")
+            if dir_pattern is not None:
+                self._process_directory_group(dir_pattern, dir_files)
 
         # Process ungrouped files (individual files not under directory headers)
-        ungrouped_files = self._files_by_directory.get(None, [])
-        for f in ungrouped_files:
-            try:
-                rel = f.relative_to(self.root)
-            except Exception:
-                rel = f.name
-
-            rel_str = str(rel)
-            # Get file size
-            try:
-                file_size = f.stat().st_size
-            except Exception:
-                file_size = 0
-
-            # Attempt to read file
-            try:
-                content = f.read_text(encoding="utf-8")
-            except Exception:
-                continue
-
-            # Choose fenced block language by suffix
-            suffix = f.suffix.lower().lstrip(".")
-            fence_lang = suffix if suffix else "text"
-            self.add_header(f"File: `{rel_str}` (Size: {file_size} bytes)", level=2)
-            self.add_text(f"```{fence_lang}")
-            self.add_text(content.rstrip())
-            self.add_text("```")
+        self._process_ungrouped_files()
 
         output.parent.mkdir(parents=True, exist_ok=True)
         output.write_text(self.get_text(), encoding="utf-8")
@@ -882,6 +898,58 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     return parser.parse_args(argv)
 
 
+def _setup_logging(verbose: bool) -> None:
+    """Set up logging with color formatter.
+
+    Args:
+        verbose (bool): Enable debug logging if True.
+    """
+    handler = logging.StreamHandler()
+    handler.setFormatter(ColorFormatter("%(levelname)s: %(message)s"))
+    logger.addHandler(handler)
+    logger.setLevel(logging.DEBUG if verbose else logging.INFO)
+
+
+def _parse_patterns_and_excludes(args) -> tuple[list[str], list[str]]:
+    """Parse patterns and excludes from args.
+
+    Args:
+        args: Parsed arguments.
+
+    Returns:
+        tuple[list[str], list[str]]: (patterns, excludes)
+    """
+    patterns = [p.strip() for p in args.patterns.split(",") if p.strip()]
+    excludes = [p.strip() for p in args.excludes.split(",") if p.strip()]
+    return patterns, excludes
+
+
+def _log_bundle_stats(output: Path) -> None:
+    """Log statistics about the created bundle.
+
+    Args:
+        output (Path): The output file.
+    """
+    file_size_kb = output.stat().st_size / 1024
+
+    try:
+        content = output.read_text(encoding="utf-8")
+        line_count = len(content.splitlines())
+        word_count = len(content.split())
+        token_estimate = len(content) // 4
+    except Exception:
+        line_count = word_count = token_estimate = 0
+
+    logger.info(
+        "Created bundle: %s (%.2f KB, %d lines, %d words, ~%d tokens)",
+        output,
+        file_size_kb,
+        line_count,
+        word_count,
+        token_estimate,
+    )
+
+
 def main(argv: list[str] | None = None) -> int:
     """Main entry point for the pybundler command-line tool.
 
@@ -894,23 +962,14 @@ def main(argv: list[str] | None = None) -> int:
             Exit code (0 for success).
     """
     args = parse_args(argv)
+    _setup_logging(args.verbose)
 
-    # Set up logging.
-    handler = logging.StreamHandler()
-    handler.setFormatter(ColorFormatter("%(levelname)s: %(message)s"))
-    logger.addHandler(handler)
-    logger.setLevel(logging.DEBUG if args.verbose else logging.INFO)
-
-    # Get the root path.
     root = Path(args.root).resolve()
-
     if not root.exists():
         logger.error("Root directory '%s' does not exist.", root)
         return 1
 
-    # Parse patterns - use None if default was used (to allow config loading)
-    patterns: list[str] = [p.strip() for p in args.patterns.split(",") if p.strip()]
-    excludes: list[str] = [p.strip() for p in args.excludes.split(",") if p.strip()]
+    patterns, excludes = _parse_patterns_and_excludes(args)
 
     # Handle config generation
     if args.generate_config:
@@ -960,29 +1019,7 @@ def main(argv: list[str] | None = None) -> int:
             "Consider using --max-size to filter out large files or adjust --warn-size."
         )
 
-    # Get file statistics
-    file_size_kb = output.stat().st_size / 1024
-
-    # Count lines and words
-    try:
-        content = output.read_text(encoding="utf-8")
-        line_count = len(content.splitlines())
-        word_count = len(content.split())
-        # Rough token estimate: ~4 characters per token
-        token_estimate = len(content) // 4
-    except Exception:
-        line_count = 0
-        word_count = 0
-        token_estimate = 0
-
-    logger.info(
-        "Created bundle: %s (%.2f KB, %d lines, %d words, ~%d tokens)",
-        output,
-        file_size_kb,
-        line_count,
-        word_count,
-        token_estimate,
-    )
+    _log_bundle_stats(output)
     return 0
 
 
