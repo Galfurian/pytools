@@ -263,76 +263,21 @@ def _collect_files(
     return sorted(matched_files)
 
 
-def _is_valid_pattern(
-    root: Path, pattern: str, excludes: list[str] | None = None
-) -> tuple[bool, list[Path]]:
-    """Check if a pattern is valid and return any matching files."""
-    root = root.resolve()
-
-    # Normalize directory patterns
-    if not any(c in pattern for c in "*?[]"):
-        path_obj = root / pattern
-        if path_obj.exists():
-            return True, []
-        # If it's a directory, try to match files inside
-        if path_obj.is_dir():
-            pattern = pattern.rstrip("/") + "/**"
-
-    files = _collect_files(
-        root,
-        [pattern],
-        include_hidden=False,
-        max_file_size=None,
-        excludes=excludes,
-    )
-
-    return (bool(files), files)
-
-
-def _generate_config(
-    root: Path,
-    patterns: list[str],
-    config_filename: str = DEFAULT_CONFIG_FILENAME,
-    excludes: list[str] | None = None,
-) -> int:
-    """Generate a starter bundler configuration file.
+def _generate_toc_entries(
+    valid_patterns: list[str], all_files: set[Path], root: Path
+) -> dict[str, str]:
+    """Generate TOC entries based on patterns and collected files.
 
     Args:
-        root (Path):
-            Root directory to scan for files.
-        patterns (list[str]):
-            Glob patterns to match files.
-        config_filename (str):
-            Name of the config file to generate.
+        valid_patterns: List of valid glob patterns.
+        all_files: Set of all collected file paths.
+        root: Root directory path.
 
     Returns:
-        int:
-            Exit code (0 for success).
+        Dictionary mapping TOC entry names to descriptions (initially empty strings).
     """
-    # Validate patterns individually and collect valid ones
-    valid_patterns = []
-    all_files = set()
-
-    for pattern in patterns:
-        # Check if pattern is valid and get any matching files
-        is_valid, files = _is_valid_pattern(root, pattern, excludes)
-        if is_valid:
-            all_files.update(files)
-            valid_patterns.append(pattern)
-        else:
-            logger.warning(
-                "Pattern '%s' does not match any files or valid paths. Skipping.",
-                pattern,
-            )
-
-    if not valid_patterns:
-        logger.error("No valid patterns found. Cannot generate config.")
-        return 1
-
-    # Collect TOC entries based on valid pattern types
     toc = {}
 
-    # Analyze each valid pattern to determine TOC entries
     for pattern in valid_patterns:
         # If pattern ends with /** or /*, it's a directory pattern - add directory name
         if pattern.endswith("/**") or pattern.endswith("/*"):
@@ -369,6 +314,46 @@ def _generate_config(
                         toc[dir_name.split("/")[0]] = ""
                     else:
                         toc[dir_name] = ""
+
+    return toc
+
+
+def _generate_config(
+    root: Path,
+    patterns: list[str],
+    config_filename: str = DEFAULT_CONFIG_FILENAME,
+    excludes: list[str] | None = None,
+) -> int:
+    """Generate a starter bundler configuration file.
+
+    Args:
+        root (Path):
+            Root directory to scan for files.
+        patterns (list[str]):
+            Glob patterns to match files.
+        config_filename (str):
+            Name of the config file to generate.
+
+    Returns:
+        int:
+            Exit code (0 for success).
+    """
+    # Collect files from all patterns
+    valid_patterns = patterns
+    all_files = set()
+
+    for pattern in patterns:
+        files = _collect_files(
+            root,
+            [pattern],
+            include_hidden=False,
+            max_file_size=None,
+            excludes=excludes,
+        )
+        all_files.update(files)
+
+    # Collect TOC entries based on valid pattern types
+    toc = _generate_toc_entries(valid_patterns, all_files, root)
 
     # Create config object and save it
     config = Config(
