@@ -360,7 +360,6 @@ def _generate_config(
     patterns: list[str],
     config_filename: str = DEFAULT_CONFIG_FILENAME,
     excludes: list[str] | None = None,
-    all_files: set[Path] | None = None,
 ) -> int:
     """Generate a starter bundler configuration file.
 
@@ -372,33 +371,32 @@ def _generate_config(
         config_filename (str):
             Name of the config file to generate.
         excludes (list[str] | None):
-            Patterns to exclude.
-        all_files (set[Path] | None):
-            Pre-collected files. If None, will collect internally.
+            List of glob patterns to exclude files.
 
     Returns:
         int:
             Exit code (0 for success).
     """
-    if all_files is None:
-        # Collect files from all patterns
-        all_files = set()
-        for pattern in patterns:
-            files = _collect_files(
-                root,
-                [pattern],
-                include_hidden=False,
-                max_file_size=None,
-                excludes=excludes,
-            )
-            all_files.update(files)
+    # Collect files from all patterns
+    valid_patterns = patterns
+    all_files = set()
+
+    for pattern in patterns:
+        files = _collect_files(
+            root,
+            [pattern],
+            include_hidden=False,
+            max_file_size=None,
+            excludes=excludes,
+        )
+        all_files.update(files)
 
     # Collect TOC entries based on valid pattern types
-    toc = _generate_config_toc_entries(patterns, all_files, root)
+    toc = _generate_config_toc_entries(valid_patterns, all_files, root)
 
     # Create config object and save it
     config = Config(
-        patterns=patterns,
+        patterns=valid_patterns,
         toc=toc,
         excludes=excludes or [],
     )
@@ -408,7 +406,7 @@ def _generate_config(
     logger.info(
         "Generated starter %s file with %d patterns and %d TOC entries.",
         config_filename,
-        len(patterns),
+        len(valid_patterns),
         len(toc),
     )
     logger.info("Edit the file to customize patterns and add descriptions.")
@@ -916,23 +914,11 @@ def main(argv: list[str] | None = None) -> int:
 
     # Handle config generation
     if args.generate_config:
-        # Collect files once for config generation
-        all_files = set()
-        for pattern in patterns:
-            files = _collect_files(
-                root,
-                [pattern],
-                include_hidden=False,
-                max_file_size=None,
-                excludes=excludes,
-            )
-            all_files.update(files)
         return _generate_config(
             root=root,
             patterns=patterns,
             config_filename=args.generate_config,
             excludes=excludes,
-            all_files=all_files,
         )
 
     bundler = PyBundler(
