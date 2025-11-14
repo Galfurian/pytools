@@ -300,7 +300,7 @@ def _collect_files(
     return sorted(matched_files)
 
 
-def _generate_toc_entries(
+def _generate_config_toc_entries(
     valid_patterns: list[str], all_files: set[Path], root: Path
 ) -> dict[str, str]:
     """Generate TOC entries based on patterns and collected files.
@@ -390,7 +390,7 @@ def _generate_config(
         all_files.update(files)
 
     # Collect TOC entries based on valid pattern types
-    toc = _generate_toc_entries(valid_patterns, all_files, root)
+    toc = _generate_config_toc_entries(valid_patterns, all_files, root)
 
     # Create config object and save it
     config = Config(
