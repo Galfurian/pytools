@@ -244,6 +244,24 @@ def save_config_to_file(config: Config, config_file: Path) -> None:
         raise RuntimeError(f"Failed to save config file {config_file}: {e}")
 
 
+def _parse_pattern_modifier(pattern: str) -> tuple[str, int | None]:
+    """Parse pattern to extract base pattern and limit modifier.
+
+    Args:
+        pattern (str): The pattern, possibly with [+n] or [-n] suffix.
+
+    Returns:
+        tuple[str, int | None]: (base_pattern, limit) where limit is positive for first n, negative for last n, None for no limit.
+    """
+    import re
+    match = re.search(r'\[([+-]?\d+)\]$', pattern)
+    if match:
+        base = pattern[:match.start()]
+        limit = int(match.group(1))
+        return base, limit
+    return pattern, None
+
+
 def _collect_files(
     root: Path,
     patterns: list[str],
@@ -254,6 +272,9 @@ def _collect_files(
     """
     Collect files under `root` matching `patterns`, excluding hidden files,
     oversized files, and those matching `excludes`.
+
+    Patterns can include modifiers: [+n] to keep first n files, [-n] to keep last n files.
+    Files are sorted by path before applying limits.
     """
     if not root.exists():
         return []
@@ -268,8 +289,10 @@ def _collect_files(
 
     logger.debug("Starting file collection...")
     for pattern in patterns:
-        logger.debug("  Processing pattern: `%s`...", pattern)
-        for path in root.glob(pattern):
+        base_pattern, limit = _parse_pattern_modifier(pattern)
+        logger.debug("  Processing pattern: `%s` (limit: %s)...", base_pattern, limit)
+        files_for_pattern = set()
+        for path in root.glob(base_pattern):
             if not path.is_file():
                 continue
 
@@ -289,8 +312,20 @@ def _collect_files(
             if excludes and _is_excluded(path, root, excludes):
                 continue
 
-            matched_files.add(path.resolve())
+            files_for_pattern.add(path.resolve())
+
+        # Apply limit if specified
+        if limit is not None:
+            sorted_files = sorted(files_for_pattern)
+            if limit > 0:
+                files_for_pattern = set(sorted_files[:limit])
+            elif limit < 0:
+                files_for_pattern = set(sorted_files[limit:])
+        
+        for path in files_for_pattern:
             logger.debug("    - %s", path)
+
+        matched_files.update(files_for_pattern)
 
     return sorted(matched_files)
 
@@ -864,7 +899,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--patterns",
         type=str,
         default="**/*.*",
-        help="Comma-separated glob patterns to include (default: '**/*.*')",
+        help="Comma-separated glob patterns to include (default: '**/*.*'). "
+             "Patterns can have modifiers: [+n] to keep first n files, [-n] to keep last n files.",
     )
     parser.add_argument(
         "--excludes",
