@@ -11,6 +11,7 @@ result is intended for copy/paste into LLM/web-UI uploads.
 from __future__ import annotations
 
 import argparse
+from collections import defaultdict
 from dataclasses import dataclass
 from datetime import datetime
 import logging
@@ -65,12 +66,40 @@ def load_config_from_file(path: Path) -> Config | None:
     if not path.exists():
         return None
 
+    section_lines = _extract_config_sections(path)
+    if section_lines is None:
+        return None
+
+    # Parse sections
+    patterns = _load_config_list(
+        section_lines.get("patterns", []), _parse_config_item, path, "patterns"
+    )
+    excludes = _load_config_list(
+        section_lines.get("excludes", []), _parse_config_item, path, "excludes"
+    )
+    toc_items = _load_config_list(section_lines.get("toc", []), _parse_config_toc_item, path, "toc")
+    toc = dict(toc_items)
+
+    return Config(
+        patterns=patterns,
+        toc=toc,
+        excludes=excludes,
+    )
+
+
+def _extract_config_sections(path: Path) -> dict[str, list[str]] | None:
+    """Extract sections from config file.
+
+    Args:
+        path: Path to the config file.
+
+    Returns:
+        Dict of section names to list of lines, or None if error.
+    """
     try:
         with open(path, "r", encoding="utf-8") as f:
             current_section = None
-            patterns: list[str] = []
-            excludes: list[str] = []
-            toc: dict[str, str] = {}
+            section_lines = defaultdict(list)
 
             for line in f:
                 original_line = line
@@ -96,58 +125,8 @@ def load_config_from_file(path: Path) -> Config | None:
                         current_section = section
                     continue
 
-                # Parse patterns - list format only
-                if current_section == "patterns":
-                    if not line.startswith("- "):
-                        logger.error(
-                            "Invalid line in 'patterns' section of %s: '%s'. Expected format: '- pattern'",
-                            path,
-                            line,
-                        )
-                        continue
-                    pattern = line[2:].strip()
-                    if not pattern:
-                        logger.warning(
-                            "Empty pattern in 'patterns' section of %s",
-                            path,
-                        )
-                        continue
-                    patterns.append(pattern)
-
-                # Parse excludes patterns - list format only
-                elif current_section == "excludes":
-                    if not line.startswith("- "):
-                        logger.error(
-                            "Invalid line in 'excludes' section of %s: '%s'. Expected format: '- pattern'",
-                            path,
-                            line,
-                        )
-                        continue
-                    pattern = line[2:].strip()
-                    if not pattern:
-                        logger.warning(
-                            "Empty pattern in 'excludes' section of %s",
-                            path,
-                        )
-                        continue
-                    excludes.append(pattern)
-
-                # Parse key-value pairs for TOC
-                elif current_section == "toc":
-                    if ":" not in line:
-                        logger.error(
-                            "Invalid line in 'toc' section of %s: '%s'. Expected format: 'key: description'",
-                            path,
-                            line,
-                        )
-                        continue
-                    key, description = line.split(":", 1)
-                    key = key.strip()
-                    description = description.strip()
-                    if not key:
-                        logger.warning("Empty key in 'toc' section of %s", path)
-                        continue
-                    toc[key.lower()] = description
+                if current_section:
+                    section_lines[current_section].append(line)
                 else:
                     logger.warning(
                         "Line outside any section in %s: '%s'. Ignoring.",
@@ -155,15 +134,73 @@ def load_config_from_file(path: Path) -> Config | None:
                         line,
                     )
 
+        return section_lines
+
     except Exception as e:
         logger.warning("Could not read %s file: %s", path, e)
         return None
 
-    return Config(
-        patterns=patterns,
-        toc=toc,
-        excludes=excludes,
-    )
+
+def _load_config_list(lines: list[str], parser, path: Path, section_name: str) -> list:
+    """Load a list section from config lines.
+
+    Args:
+        lines: List of stripped lines for the section.
+        parser: Function to parse each item.
+        path: Config file path for error messages.
+        section_name: Section name for error messages.
+
+    Returns:
+        List of parsed items.
+    """
+    result = []
+    for line in lines:
+        if not line.startswith("- "):
+            logger.error(
+                "Invalid line in '%s' section of %s: '%s'. Expected format: '- item'",
+                section_name,
+                path,
+                line,
+            )
+            continue
+        item = parser(line[2:].strip())
+        if item:
+            result.append(item)
+        else:
+            logger.warning("Empty item in '%s' section of %s", section_name, path)
+    return result
+
+
+def _parse_config_item(line: str) -> str | None:
+    """Parse a config item line.
+
+    Args:
+        line: The line to parse (without '- ').
+
+    Returns:
+        The item string or None if invalid.
+    """
+    item = line.strip()
+    return item if item else None
+
+
+def _parse_config_toc_item(line: str) -> tuple[str, str] | None:
+    """Parse a TOC item line into key-value pair.
+
+    Args:
+        line: The line to parse (without '- ').
+
+    Returns:
+        Tuple of (key, description) or None if invalid.
+    """
+    if ":" not in line:
+        return None
+    key, description = line.split(":", 1)
+    key = key.strip()
+    description = description.strip()
+    if not key:
+        return None
+    return key.lower(), description
 
 
 def save_config_to_file(config: Config, config_file: Path) -> None:
@@ -194,7 +231,7 @@ def save_config_to_file(config: Config, config_file: Path) -> None:
             f.write("toc:\n")
             for entry in sorted(config.toc.keys()):
                 description = config.toc[entry]
-                f.write(f"  {entry}: {description}\n")
+                f.write(f"  - {entry}: {description}\n")
             f.write("# \n")
             f.write("# Exclude section: patterns to excludes from bundling\n")
             f.write("excludes:\n")
