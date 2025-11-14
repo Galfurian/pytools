@@ -954,6 +954,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         action="store_true",
         help="Enable verbose logging",
     )
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Show what files would be bundled without creating the output file",
+    )
     return parser.parse_args(argv)
 
 
@@ -1068,6 +1073,30 @@ def main(argv: list[str] | None = None) -> int:
 
     patterns_display = _format_patterns_display(bundler.patterns)
     logger.info("Bundling files from %s using patterns: %s", root, patterns_display)
+
+    # Handle dry run
+    if args.dry_run:
+        # Collect files the same way bundle() does
+        bundler._files = _collect_files(
+            bundler.root,
+            bundler.patterns,
+            bundler.include_hidden,
+            bundler.max_file_size,
+            bundler.excludes,
+        )
+        files, warnings = bundler.collect_files_with_warnings()
+        logger.info("Dry run: Would bundle %d files", len(files))
+        for f in files:
+            rel_path = f.relative_to(root)
+            try:
+                size = f.stat().st_size
+                logger.info("  - %s (%d bytes)", rel_path, size)
+            except OSError:
+                logger.info("  - %s (size unknown)", rel_path)
+        if warnings:
+            for warning in warnings:
+                logger.warning("%s", warning)
+        return 0
 
     output = bundler.bundle(out_path)
 
