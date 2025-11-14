@@ -16,6 +16,8 @@ from datetime import datetime
 import logging
 from pathlib import Path
 import fnmatch
+from typing import Optional
+
 
 DEFAULT_CONFIG_FILENAME = ".bundler.config"
 
@@ -46,134 +48,121 @@ class Config:
     """Configuration for pybundler containing patterns and TOC descriptions."""
 
     patterns: list[str]
-    toc_descriptions: dict[str, str]
-    exclude_patterns: list[str]
+    excludes: list[str]
+    toc: dict[str, str]
 
-    @classmethod
-    def load_from_files(cls, root: Path, config_files: list[str]) -> Config:
+    @staticmethod
+    def load_from_file(path: Path) -> Config | None:
         """Load configuration from config files.
 
         Args:
-            root (Path): Root directory containing config files.
-            config_files (list[str]): List of config filenames to check.
+            path (Path): Path to the config file.
 
         Returns:
-            Config: Loaded configuration.
+            Config | None: Loaded configuration or None if file does not exist.
         """
-        patterns_list: list[str] = []
-        descriptions: dict[str, str] = {}
-        exclude_list: list[str] = []
 
-        for config_filename in config_files:
-            config_file = root / config_filename
+        if not path.exists():
+            return None
 
-            if not config_file.exists():
-                continue
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                current_section = None
+                patterns: list[str] = []
+                excludes: list[str] = []
+                toc: dict[str, str] = {}
 
-            try:
-                with open(config_file, "r", encoding="utf-8") as f:
-                    current_section = None
-                    current_patterns: list[str] = []
-                    current_excludes: list[str] = []
+                for line in f:
+                    original_line = line
+                    line = line.strip()
+                    if not line or line.startswith("#"):
+                        continue
 
-                    for line in f:
-                        original_line = line
-                        line = line.strip()
-                        if not line or line.startswith("#"):
-                            continue
-
-                        # Section headers - assume they are not indented
-                        if (
-                            line.endswith(":")
-                            and not original_line.startswith(" ")
-                            and ":" not in line[:-1]
-                        ):
-                            section = line[:-1].lower()
-                            if section not in ["patterns", "exclude", "toc"]:
-                                logger.warning(
-                                    "Unknown section '%s' in config file %s. Ignoring.",
-                                    section,
-                                    config_filename,
-                                )
-                                current_section = None
-                            else:
-                                current_section = section
-                            continue
-
-                        # Parse patterns - list format only
-                        if current_section == "patterns":
-                            if not line.startswith("- "):
-                                logger.error(
-                                    "Invalid line in 'patterns' section of %s: '%s'. Expected format: '- pattern'",
-                                    config_filename,
-                                    line,
-                                )
-                                continue
-                            pattern = line[2:].strip()
-                            if not pattern:
-                                logger.warning(
-                                    "Empty pattern in 'patterns' section of %s",
-                                    config_filename,
-                                )
-                                continue
-                            current_patterns.append(pattern)
-
-                        # Parse exclude patterns - list format only
-                        elif current_section == "exclude":
-                            if not line.startswith("- "):
-                                logger.error(
-                                    "Invalid line in 'exclude' section of %s: '%s'. Expected format: '- pattern'",
-                                    config_filename,
-                                    line,
-                                )
-                                continue
-                            pattern = line[2:].strip()
-                            if not pattern:
-                                logger.warning(
-                                    "Empty pattern in 'exclude' section of %s",
-                                    config_filename,
-                                )
-                                continue
-                            current_excludes.append(pattern)
-
-                        # Parse key-value pairs for TOC
-                        elif current_section == "toc":
-                            if ":" not in line:
-                                logger.error(
-                                    "Invalid line in 'toc' section of %s: '%s'. Expected format: 'key: description'",
-                                    config_filename,
-                                    line,
-                                )
-                                continue
-                            key, description = line.split(":", 1)
-                            key = key.strip()
-                            description = description.strip()
-                            if not key:
-                                logger.warning(
-                                    "Empty key in 'toc' section of %s", config_filename
-                                )
-                                continue
-                            descriptions[key.lower()] = description
-                        else:
+                    # Section headers - assume they are not indented
+                    if (
+                        line.endswith(":")
+                        and not original_line.startswith(" ")
+                        and ":" not in line[:-1]
+                    ):
+                        section = line[:-1].lower()
+                        if section not in ["patterns", "excludes", "toc"]:
                             logger.warning(
-                                "Line outside any section in %s: '%s'. Ignoring.",
-                                config_filename,
+                                "Unknown section '%s' in config file %s. Ignoring.",
+                                section,
+                                path,
+                            )
+                            current_section = None
+                        else:
+                            current_section = section
+                        continue
+
+                    # Parse patterns - list format only
+                    if current_section == "patterns":
+                        if not line.startswith("- "):
+                            logger.error(
+                                "Invalid line in 'patterns' section of %s: '%s'. Expected format: '- pattern'",
+                                path,
                                 line,
                             )
+                            continue
+                        pattern = line[2:].strip()
+                        if not pattern:
+                            logger.warning(
+                                "Empty pattern in 'patterns' section of %s",
+                                path,
+                            )
+                            continue
+                        patterns.append(pattern)
 
-                    # Merge patterns from this file (later files override)
-                    if current_patterns:
-                        patterns_list = current_patterns
-                    if current_excludes:
-                        exclude_list = current_excludes
+                    # Parse excludes patterns - list format only
+                    elif current_section == "excludes":
+                        if not line.startswith("- "):
+                            logger.error(
+                                "Invalid line in 'excludes' section of %s: '%s'. Expected format: '- pattern'",
+                                path,
+                                line,
+                            )
+                            continue
+                        pattern = line[2:].strip()
+                        if not pattern:
+                            logger.warning(
+                                "Empty pattern in 'excludes' section of %s",
+                                path,
+                            )
+                            continue
+                        excludes.append(pattern)
 
-            except Exception as e:
-                logger.warning("Could not read %s file: %s", config_filename, e)
+                    # Parse key-value pairs for TOC
+                    elif current_section == "toc":
+                        if ":" not in line:
+                            logger.error(
+                                "Invalid line in 'toc' section of %s: '%s'. Expected format: 'key: description'",
+                                path,
+                                line,
+                            )
+                            continue
+                        key, description = line.split(":", 1)
+                        key = key.strip()
+                        description = description.strip()
+                        if not key:
+                            logger.warning("Empty key in 'toc' section of %s", path)
+                            continue
+                        toc[key.lower()] = description
+                    else:
+                        logger.warning(
+                            "Line outside any section in %s: '%s'. Ignoring.",
+                            path,
+                            line,
+                        )
 
-        return cls(
-            patterns=patterns_list,
-            toc_descriptions=descriptions,
-            exclude_patterns=exclude_list,
+        except Exception as e:
+            logger.warning("Could not read %s file: %s", path, e)
+            return None
+
+        return Config(
+            patterns=patterns,
+            toc=toc,
+            excludes=excludes,
         )
 
     def save_to_file(self, config_file: Path) -> None:
@@ -203,47 +192,16 @@ class Config:
                     "# TOC section: descriptions for folders/files in table of contents\n"
                 )
                 f.write("toc:\n")
-                for entry in sorted(self.toc_descriptions.keys()):
-                    description = self.toc_descriptions[entry]
+                for entry in sorted(self.toc.keys()):
+                    description = self.toc[entry]
                     f.write(f"  {entry}: {description}\n")
                 f.write("# \n")
-                f.write("# Exclude section: patterns to exclude from bundling\n")
-                f.write("exclude:\n")
-                for pattern in self.exclude_patterns:
+                f.write("# Exclude section: patterns to excludes from bundling\n")
+                f.write("excludes:\n")
+                for pattern in self.excludes:
                     f.write(f"  - {pattern}\n")
         except Exception as e:
             raise RuntimeError(f"Failed to save config file {config_file}: {e}")
-
-
-def _is_hidden_path(path: Path) -> bool:
-    """Check if a path contains hidden files or directories.
-
-    A path is considered hidden if it or any of its parent directories
-    start with a dot ('.').
-
-    Args:
-        path (Path):
-            The path to check.
-
-    Returns:
-        bool:
-            True if the path contains hidden components, False otherwise.
-    """
-    # Check the file/directory name itself
-    if path.name.startswith("."):
-        return True
-
-    # Check all parent directories
-    for parent in path.parents:
-        if parent.name.startswith("."):
-            return True
-
-    return False
-
-
-from pathlib import Path
-import fnmatch
-from typing import Optional
 
 
 def _collect_files(
@@ -251,11 +209,11 @@ def _collect_files(
     patterns: list[str],
     include_hidden: bool = False,
     max_file_size: Optional[int] = None,
-    exclude_patterns: Optional[list[str]] = None,
+    excludes: Optional[list[str]] = None,
 ) -> list[Path]:
     """
     Collect files under `root` matching `patterns`, excluding hidden files,
-    oversized files, and those matching `exclude_patterns`.
+    oversized files, and those matching `excludes`.
     """
     if not root.exists():
         return []
@@ -264,12 +222,13 @@ def _collect_files(
 
     logger.debug("Collecting files from root: %s", root)
     logger.debug("Using patterns: %s", patterns)
-    logger.debug("Exclude patterns: %s", exclude_patterns)
+    logger.debug("Exclude patterns: %s", excludes)
     logger.debug("Include hidden: %s", include_hidden)
     logger.debug("Max file size: %s", max_file_size)
 
     logger.debug("Starting file collection...")
     for pattern in patterns:
+        logger.debug("  Processing pattern: `%s`...", pattern)
         for path in root.glob(pattern):
             if not path.is_file():
                 continue
@@ -287,25 +246,25 @@ def _collect_files(
                     continue
 
             # Exclude based on patterns
-            if exclude_patterns:
+            if excludes:
                 rel_path = str(path.relative_to(root))
                 if any(
                     fnmatch.fnmatch(rel_path, pat)
                     or fnmatch.fnmatch(path.name, pat)
                     or pat in path.parts
-                    for pat in exclude_patterns
+                    for pat in excludes
                 ):
                     continue
 
             matched_files.add(path.resolve())
-            
-            logger.debug("  Include: %s", path)
+
+            logger.debug("    - %s", path)
 
     return sorted(matched_files)
 
 
 def _is_valid_pattern(
-    root: Path, pattern: str, exclude_patterns: list[str] | None = None
+    root: Path, pattern: str, excludes: list[str] | None = None
 ) -> tuple[bool, list[Path]]:
     """Check if a pattern is valid and return any matching files."""
     root = root.resolve()
@@ -324,7 +283,7 @@ def _is_valid_pattern(
         [pattern],
         include_hidden=False,
         max_file_size=None,
-        exclude_patterns=exclude_patterns,
+        excludes=excludes,
     )
 
     return (bool(files), files)
@@ -334,7 +293,7 @@ def _generate_config(
     root: Path,
     patterns: list[str],
     config_filename: str = DEFAULT_CONFIG_FILENAME,
-    exclude_patterns: list[str] | None = None,
+    excludes: list[str] | None = None,
 ) -> int:
     """Generate a starter bundler configuration file.
 
@@ -356,7 +315,7 @@ def _generate_config(
 
     for pattern in patterns:
         # Check if pattern is valid and get any matching files
-        is_valid, files = _is_valid_pattern(root, pattern, exclude_patterns)
+        is_valid, files = _is_valid_pattern(root, pattern, excludes)
         if is_valid:
             all_files.update(files)
             valid_patterns.append(pattern)
@@ -371,7 +330,7 @@ def _generate_config(
         return 1
 
     # Collect TOC entries based on valid pattern types
-    toc_descriptions = {}
+    toc = {}
 
     # Analyze each valid pattern to determine TOC entries
     for pattern in valid_patterns:
@@ -380,10 +339,10 @@ def _generate_config(
             dir_name = pattern.rstrip("/*")
             if "/" in dir_name:
                 # For nested directory patterns, add the top-level directory name
-                toc_descriptions[dir_name.split("/")[0]] = ""
+                toc[dir_name.split("/")[0]] = ""
             else:
                 # For top-level directory patterns, add the directory name
-                toc_descriptions[dir_name] = ""
+                toc[dir_name] = ""
         elif "*" in pattern or "?" in pattern:
             # Glob pattern - collect what it actually matches and add top-level entries
             for f in all_files:
@@ -393,29 +352,29 @@ def _generate_config(
                     rel = f.name
                 rel_str = str(rel)
                 if "/" in rel_str:
-                    toc_descriptions[rel_str.split("/")[0]] = ""
+                    toc[rel_str.split("/")[0]] = ""
                 else:
-                    toc_descriptions[rel_str] = ""
+                    toc[rel_str] = ""
         else:
             # Specific path - check if it's a file or directory
             path_obj = root / pattern
             if path_obj.exists():
                 if path_obj.is_file():
                     # Specific file
-                    toc_descriptions[pattern] = ""
+                    toc[pattern] = ""
                 elif path_obj.is_dir():
                     # Directory path - add directory name without trailing slash
                     dir_name = pattern.rstrip("/")
                     if "/" in dir_name:
-                        toc_descriptions[dir_name.split("/")[0]] = ""
+                        toc[dir_name.split("/")[0]] = ""
                     else:
-                        toc_descriptions[dir_name] = ""
+                        toc[dir_name] = ""
 
     # Create config object and save it
     config = Config(
         patterns=valid_patterns,
-        toc_descriptions=toc_descriptions,
-        exclude_patterns=exclude_patterns or [],
+        toc=toc,
+        excludes=excludes or [],
     )
     config_file = root / config_filename
     config.save_to_file(config_file)
@@ -424,7 +383,7 @@ def _generate_config(
         "Generated starter %s file with %d patterns and %d TOC entries.",
         config_filename,
         len(valid_patterns),
-        len(toc_descriptions),
+        len(toc),
     )
     logger.info("Edit the file to customize patterns and add descriptions.")
     logger.info("Then run with --toc to generate bundles with descriptions.")
@@ -457,7 +416,7 @@ class PyBundler:
         generate_toc (bool):
             Whether to generate a table of contents at the top of the bundle.
             Defaults to False.
-        toc_descriptions (dict[str, str] | None):
+        toc (dict[str, str] | None):
             Optional descriptions for files/folders in TOC, loaded from .bundler.toc file.
         output_lines (list[str]):
             Internal list to accumulate markdown output lines.
@@ -466,22 +425,21 @@ class PyBundler:
     def __init__(
         self,
         root: Path,
-        patterns: list[str] | None = None,
+        patterns: list[str] = [],
         max_file_size: int | None = None,
         include_hidden: bool = False,
         warn_size: int = 50 * 1024,  # 50KB default
         generate_toc: bool = False,
-        config_files: list[str] | None = None,
-        exclude_patterns: list[str] | None = None,
+        config_file: str | None = None,
+        excludes: list[str] = [],
     ):
         """Initialize the PyBundler with root directory and patterns.
 
         Args:
             root (Path):
                 The root directory to search for files.
-            patterns (list[str] | None):
-                List of glob patterns to match files. If None, loads from config files
-                or defaults to ["**/*.*"].
+            patterns (list[str]):
+                List of glob patterns to match files.
             max_file_size (int | None):
                 Maximum file size in bytes to include. If None, no size limit is applied.
             include_hidden (bool):
@@ -490,34 +448,25 @@ class PyBundler:
                 File size threshold in bytes for warnings. Defaults to 50KB.
             generate_toc (bool):
                 Whether to generate a table of contents. Defaults to False.
-            config_files (list[str] | None):
-                List of config file paths to load. If None, uses default .bundler.config.
-            exclude_patterns (list[str] | None):
-                List of glob patterns to exclude from bundling. Applied after inclusion patterns.
+            config_file (list[str]):
+                List of config file paths to load. Uses default .bundler.config if not specified.
+            excludes (list[str]):
+                List of glob patterns to excludes from bundling. Applied after inclusion patterns.
         """
         self.root = Path(root)
-        self.config_files = config_files or [DEFAULT_CONFIG_FILENAME]
 
         # Load config from files
-        config = Config.load_from_files(self.root, self.config_files)
+        config = Config.load_from_file(self.root / config_file) if config_file else None
+        if config is None:
+            config = Config(patterns, excludes, {})
 
-        # Use provided patterns or load from config
-        if patterns is None:
-            self.patterns = config.patterns if config.patterns else ["**/*.*"]
-        else:
-            self.patterns = patterns
-
-        # Use provided exclude patterns or load from config
-        if exclude_patterns is None:
-            self.exclude_patterns = config.exclude_patterns
-        else:
-            self.exclude_patterns = exclude_patterns
-
+        self.patterns = config.patterns
+        self.excludes = config.excludes
         self.max_file_size = max_file_size
         self.include_hidden = include_hidden
         self.warn_size = warn_size
         self.generate_toc = generate_toc
-        self.toc_descriptions = config.toc_descriptions
+        self.toc = config.toc
         self.output_lines: list[str] = []
 
         # Internal cache of collected files
@@ -586,7 +535,7 @@ class PyBundler:
                 self.patterns,
                 self.include_hidden,
                 self.max_file_size,
-                self.exclude_patterns,
+                self.excludes,
             )
             logger.info(
                 "Collected %d files matching the specified patterns.", len(self._files)
@@ -686,7 +635,7 @@ class PyBundler:
             rel_str = str(rel)
 
             # Check if this specific file has a description
-            if self.toc_descriptions and self.toc_descriptions.get(rel_str.lower()):
+            if self.toc and self.toc.get(rel_str.lower()):
                 individual_files.add(rel_str)
             else:
                 # For files in subdirectories, use the top-level folder
@@ -703,8 +652,8 @@ class PyBundler:
 
         for entry in all_entries:
             description = None
-            if self.toc_descriptions:
-                description = self.toc_descriptions.get(entry.lower())
+            if self.toc:
+                description = self.toc.get(entry.lower())
 
             if description:
                 self.add_text(f"- **{entry}** - {description}")
@@ -739,7 +688,7 @@ class PyBundler:
             self.patterns,
             self.include_hidden,
             self.max_file_size,
-            self.exclude_patterns,
+            self.excludes,
         )
 
         if not self._files:
@@ -868,9 +817,10 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="Comma-separated glob patterns to include (default: '**/*.*')",
     )
     parser.add_argument(
-        "--exclude",
+        "--excludes",
         type=str,
-        help="Comma-separated glob patterns to exclude (applied after inclusion patterns)",
+        default="",
+        help="Comma-separated glob patterns to excludes (applied after inclusion patterns)",
     )
     parser.add_argument(
         "--max-size",
@@ -898,14 +848,14 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--generate-config",
         type=str,
         nargs="?",
-        const=".bundler.config",
-        help="Generate a starter bundler configuration file (default: .bundler.config)",
+        const=DEFAULT_CONFIG_FILENAME,
+        help=f"Generate a starter bundler configuration file (default: {DEFAULT_CONFIG_FILENAME})",
     )
     parser.add_argument(
         "--config",
         type=str,
-        action="append",
-        help="Configuration file(s) to use (can be specified multiple times). If not specified, uses .bundler.config",
+        default=DEFAULT_CONFIG_FILENAME,
+        help=f"Configuration file(s) to use (can be specified multiple times).",
     )
     parser.add_argument(
         "--output",
@@ -941,91 +891,23 @@ def main(argv: list[str] | None = None) -> int:
     logger.setLevel(logging.DEBUG if args.verbose else logging.INFO)
 
     # Get the root path.
-    root = Path(args.root)
+    root = Path(args.root).resolve()
 
     if not root.exists():
         logger.error("Root directory '%s' does not exist.", root)
         return 1
 
-    # Auto-generate default config if none exists and not explicitly generating
-    config_files = args.config or [DEFAULT_CONFIG_FILENAME]
-    config_exists = any((root / cf).exists() for cf in config_files)
-    if not config_exists and not args.generate_config:
-        logger.info(
-            "No config file found. Generating default %s", DEFAULT_CONFIG_FILENAME
-        )
-        _generate_config(root, ["**/*.*"], DEFAULT_CONFIG_FILENAME, [])
-
     # Parse patterns - use None if default was used (to allow config loading)
-    patterns_arg = args.patterns
-    if patterns_arg == "**/*.*":  # This is the default
-        patterns = None  # Will load from config or use default
-    else:
-        patterns = [p.strip() for p in patterns_arg.split(",") if p.strip()]
-
-    # Parse exclude patterns
-    exclude_patterns = None
-    if hasattr(args, "exclude") and args.exclude:
-        exclude_patterns = [p.strip() for p in args.exclude.split(",") if p.strip()]
-
-    # Validate patterns if provided
-    if patterns:
-        for pattern in patterns:
-            is_valid, _ = _is_valid_pattern(root, pattern, exclude_patterns)
-            if not is_valid:
-                logger.warning(
-                    "Pattern '%s' does not match any files or valid paths.", pattern
-                )
-                if not ("*" in pattern or "?" in pattern):
-                    path_part = pattern.split("/")[0] if "/" in pattern else pattern
-                    if not (root / path_part).exists():
-                        logger.info(
-                            "Suggestion: Directory or file '%s' does not exist under root. Check the path.",
-                            path_part,
-                        )
-                    else:
-                        logger.info(
-                            "Suggestion: The path exists but no files match. For directories, append '/**' to include subfiles."
-                        )
-                else:
-                    logger.info(
-                        "Suggestion: No files match the glob pattern. Try a broader pattern like '**/*.*' or check for typos."
-                    )
-
-    # Validate exclude patterns if provided
-    if exclude_patterns:
-        for pattern in exclude_patterns:
-            is_valid, _ = _is_valid_pattern(root, pattern, None)
-            if not is_valid:
-                logger.warning(
-                    "Exclude pattern '%s' does not match any files or valid paths.",
-                    pattern,
-                )
-                if not ("*" in pattern or "?" in pattern):
-                    path_part = pattern.split("/")[0] if "/" in pattern else pattern
-                    if not (root / path_part).exists():
-                        logger.info(
-                            "Suggestion: Exclude directory or file '%s' does not exist under root. Check the path.",
-                            path_part,
-                        )
-                    else:
-                        logger.info(
-                            "Suggestion: The exclude path exists but no files match. For directories, append '/**' to exclude subfiles."
-                        )
-                else:
-                    logger.info(
-                        "Suggestion: No files match the exclude glob pattern. It may be unnecessary or check for typos."
-                    )
+    patterns: list[str] = [p.strip() for p in args.patterns.split(",") if p.strip()]
+    excludes: list[str] = [p.strip() for p in args.excludes.split(",") if p.strip()]
 
     # Handle config generation
     if args.generate_config:
-        # For config generation, we need actual patterns
-        actual_patterns = patterns if patterns else ["**/*.*"]
         return _generate_config(
-            root,
-            actual_patterns,
-            args.generate_config,
-            exclude_patterns,
+            root=root,
+            patterns=patterns,
+            config_filename=args.generate_config,
+            excludes=excludes,
         )
 
     bundler = PyBundler(
@@ -1035,8 +917,8 @@ def main(argv: list[str] | None = None) -> int:
         include_hidden=args.include_hidden,
         warn_size=args.warn_size,
         generate_toc=args.toc,
-        config_files=args.config,
-        exclude_patterns=exclude_patterns,
+        config_file=args.config,
+        excludes=excludes,
     )
     out_path = Path(args.output)
 
