@@ -146,9 +146,20 @@ def load_config_from_file(path: Path) -> Config | None:
         else:
             logger.warning("Invalid 'toc' in %s: expected mapping or list", path)
 
+        logger.debug(
+            "Loaded JSON config %s: patterns=%d, excludes=%d, toc=%d, root=%r, output=%r",
+            path,
+            len(patterns),
+            len(excludes),
+            len(toc),
+            cfg_root,
+            output,
+        )
+
         return Config(patterns=patterns, toc=toc, excludes=excludes, root=cfg_root, output=output)
 
     # Legacy (non-JSON) config: keep existing parser for backward compatibility
+    logger.debug("Falling back to legacy config parser for %s", path)
     section_lines = _extract_config_sections(path)
     if section_lines is None:
         return None
@@ -309,9 +320,19 @@ def save_config_to_file(config: Config, config_file: Path) -> None:
         if config.output:
             data["output"] = config.output
 
+        logger.debug(
+            "Saving JSON config to %s — root=%r output=%r patterns=%d",
+            config_file,
+            config.root,
+            config.output,
+            len(config.patterns or []),
+        )
+
         with open(config_file, "w", encoding="utf-8") as f:
             json.dump(data, f, indent=2, ensure_ascii=False)
             f.write("\n")
+
+        logger.debug("Saved JSON config to %s", config_file)
     except Exception as e:
         raise RuntimeError(f"Failed to save config file {config_file}: {e}")
 
@@ -372,18 +393,28 @@ def _collect_files(
 
             # Skip hidden files if not included
             if not include_hidden and any(part.startswith(".") for part in path.parts):
+                logger.debug("Skipping hidden file: %s (include_hidden=False)", path)
                 continue
 
             # Skip oversized files
             if max_file_size is not None:
                 try:
-                    if path.stat().st_size > max_file_size:
+                    size = path.stat().st_size
+                    if size > max_file_size:
+                        logger.debug(
+                            "Skipping oversized file: %s (size=%d > max=%d)",
+                            path,
+                            size,
+                            max_file_size,
+                        )
                         continue
                 except OSError:
+                    logger.debug("Could not stat file %s for size check (skipping)", path)
                     continue
 
             # Skip excluded files
             if excludes and _is_excluded(path, root, excludes):
+                logger.debug("Skipping excluded file: %s", path)
                 continue
 
             files_for_pattern.add(path.resolve())
@@ -423,6 +454,7 @@ def _is_excluded(path: Path, root: Path, excludes: list[str]) -> bool:
             or fnmatch.fnmatch(path.name, pat)
             or pat in path.parts
         ):
+            logger.debug("Exclusion match: path=%s pattern=%s", rel_path, pat)
             return True
     return False
 
@@ -661,6 +693,15 @@ class PyBundler:
         self.toc = config.toc
         self.output: str | None = config.output
         self.output_lines: list[str] = []
+
+        logger.debug(
+            "PyBundler initialized: root=%s, patterns=%s, excludes=%s, output=%s, toc_entries=%d",
+            self.root,
+            self.patterns,
+            self.excludes,
+            self.output,
+            len(self.toc or {}),
+        )
 
         # Internal cache of collected files
         self._files: list[Path] = []
@@ -951,6 +992,8 @@ class PyBundler:
             self.excludes,
         )
 
+        logger.debug("Collected %d files for bundling (root=%s)", len(self._files), self.root)
+
         if not self._files:
             self.add_text("No files found. Nothing to bundle.")
             output.parent.mkdir(parents=True, exist_ok=True)
@@ -959,9 +1002,11 @@ class PyBundler:
 
         # Generate table of contents if requested
         if self.generate_toc:
+            logger.debug("Generating TOC for %d files", len(self._files))
             self._generate_toc()
 
         # Group files by directory for hierarchical output
+        logger.debug("Grouping %d files by directory patterns", len(self._files))
         self._group_files_by_directory()
 
         # Process grouped files (directory headers)
@@ -972,6 +1017,7 @@ class PyBundler:
         # Process ungrouped files (individual files not under directory headers)
         self._process_ungrouped_files()
 
+        logger.debug("Writing bundle to %s", output)
         output.parent.mkdir(parents=True, exist_ok=True)
         output.write_text(self.get_text(), encoding="utf-8")
         return output
@@ -1205,6 +1251,7 @@ def main(argv: list[str] | None = None) -> int:
         out_path = (
             out_candidate if out_candidate.is_absolute() else Path.cwd() / out_candidate
         )
+        out_source = "cli"
     elif bundler.output:
         out_candidate = Path(bundler.output)
         out_path = (
@@ -1212,8 +1259,12 @@ def main(argv: list[str] | None = None) -> int:
             if out_candidate.is_absolute()
             else bundler.root / out_candidate
         )
+        out_source = "config"
     else:
         out_path = Path("BUNDLE.md")  # current working directory
+        out_source = "default"
+
+    logger.debug("Resolved output path: %s (source=%s)", out_path, out_source)
 
     patterns_display = _format_patterns_display(bundler.patterns)
     logger.info("Bundling files from %s using patterns: %s", root, patterns_display)
