@@ -318,9 +318,10 @@ def _parse_pattern_modifier(pattern: str) -> tuple[str, int | None]:
 
     """
     import re
+
     match = re.search(r"\[([+-]?\d+)\]$", pattern)
     if match:
-        base = pattern[:match.start()]
+        base = pattern[: match.start()]
         limit = int(match.group(1))
         return base, limit
     return pattern, None
@@ -458,7 +459,9 @@ def _add_directory_toc_entry(toc: dict[str, str], dir_name: str) -> None:
         toc[dir_name] = ""
 
 
-def _add_glob_toc_entries(toc: dict[str, str], all_files: set[Path], root: Path) -> None:
+def _add_glob_toc_entries(
+    toc: dict[str, str], all_files: set[Path], root: Path
+) -> None:
     """Add TOC entries for glob patterns.
 
     Args:
@@ -630,7 +633,7 @@ class PyBundler:
         # Load config from files
         config = load_config_from_file(self.root / config_file) if config_file else None
         if config is None:
-            config = Config(patterns, excludes, {})
+            config = Config(patterns=patterns, excludes=excludes, toc={})
 
         self.patterns = config.patterns
         self.excludes = config.excludes
@@ -639,6 +642,7 @@ class PyBundler:
         self.warn_size = warn_size
         self.generate_toc = generate_toc
         self.toc = config.toc
+        self.output: str | None = config.output
         self.output_lines: list[str] = []
 
         # Internal cache of collected files
@@ -879,9 +883,7 @@ class PyBundler:
             return
 
         # Calculate directory statistics
-        total_size = sum(
-            f.stat().st_size for f in dir_files if f.exists()
-        )
+        total_size = sum(f.stat().st_size for f in dir_files if f.exists())
         dir_name = dir_pattern.rstrip("/")
 
         # Create directory header
@@ -984,7 +986,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         type=str,
         default="**/*.*",
         help="Comma-separated glob patterns to include (default: '**/*.*'). "
-             "Patterns can have modifiers: [+n] to keep first n files, [-n] to keep last n files.",
+        "Patterns can have modifiers: [+n] to keep first n files, [-n] to keep last n files.",
     )
     parser.add_argument(
         "--excludes",
@@ -1161,10 +1163,16 @@ def main(argv: list[str] | None = None) -> int:
     # Determine output path precedence: CLI > config > default ('BUNDLE.md' in CWD)
     if args.output:
         out_candidate = Path(args.output)
-        out_path = out_candidate if out_candidate.is_absolute() else Path.cwd() / out_candidate
+        out_path = (
+            out_candidate if out_candidate.is_absolute() else Path.cwd() / out_candidate
+        )
     elif bundler.output:
         out_candidate = Path(bundler.output)
-        out_path = out_candidate if out_candidate.is_absolute() else bundler.root / out_candidate
+        out_path = (
+            out_candidate
+            if out_candidate.is_absolute()
+            else bundler.root / out_candidate
+        )
     else:
         out_path = Path("BUNDLE.md")  # current working directory
 
