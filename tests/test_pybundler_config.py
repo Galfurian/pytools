@@ -90,6 +90,36 @@ def test_config_output_used_when_no_cli(tmp_path: Path):
     assert (tmp_path / "out" / "CONFIG.md").exists()
 
 
+def test_config_root_used_when_no_cli(tmp_path: Path):
+    # config specifies a different root directory
+    (tmp_path / "project").mkdir()
+    (tmp_path / "project" / "file.txt").write_text("hello", encoding="utf-8")
+
+    cfg = {"patterns": ["**/*.*"], "root": "project", "output": "out/config_root.md"}
+    (tmp_path / ".bundler.json").write_text(json.dumps(cfg), encoding="utf-8")
+
+    # Call without --root; main should use config.root resolved relative to the config file
+    rc = main(["--config", str(tmp_path / ".bundler.json")])
+    assert rc == 0
+    assert (tmp_path / "project" / "out" / "config_root.md").exists()
+
+
+def test_cli_root_overrides_config(tmp_path: Path):
+    (tmp_path / "projectA").mkdir()
+    (tmp_path / "projectA" / "file.txt").write_text("a", encoding="utf-8")
+    (tmp_path / "projectB").mkdir()
+    (tmp_path / "projectB" / "file.txt").write_text("b", encoding="utf-8")
+
+    cfg = {"patterns": ["**/*.*"], "root": "projectA", "output": "out/config_root.md"}
+    (tmp_path / ".bundler.json").write_text(json.dumps(cfg), encoding="utf-8")
+
+    # CLI root should override config.root; config.output still applies (resolved against CLI root)
+    rc = main(["--root", str(tmp_path / "projectB"), "--config", str(tmp_path / ".bundler.json")])
+    assert rc == 0
+    assert (tmp_path / "projectB" / "out" / "config_root.md").exists()
+    assert not (tmp_path / "projectB" / "BUNDLE.md").exists()
+
+
 def test_cli_output_overrides_config(tmp_path: Path):
     (tmp_path / "src").mkdir()
     (tmp_path / "src" / "main.py").write_text("print('hi')", encoding="utf-8")

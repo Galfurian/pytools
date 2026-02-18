@@ -58,6 +58,7 @@ class Config:
     patterns: list[str]
     excludes: list[str]
     toc: dict[str, str]
+    root: str | None = None
     output: str | None = None
 
 
@@ -116,6 +117,12 @@ def load_config_from_file(path: Path) -> Config | None:
             logger.warning("Invalid 'excludes' in %s: expected list", path)
             excludes = []
 
+        # Root (optional)
+        cfg_root = data.get("root")
+        if cfg_root is not None and not isinstance(cfg_root, str):
+            logger.warning("Invalid 'root' in %s: expected string", path)
+            cfg_root = None
+
         # Output (optional)
         output = data.get("output")
         if output is not None and not isinstance(output, str):
@@ -139,7 +146,7 @@ def load_config_from_file(path: Path) -> Config | None:
         else:
             logger.warning("Invalid 'toc' in %s: expected mapping or list", path)
 
-        return Config(patterns=patterns, toc=toc, excludes=excludes, output=output)
+        return Config(patterns=patterns, toc=toc, excludes=excludes, root=cfg_root, output=output)
 
     # Legacy (non-JSON) config: keep existing parser for backward compatibility
     section_lines = _extract_config_sections(path)
@@ -297,6 +304,8 @@ def save_config_to_file(config: Config, config_file: Path) -> None:
             "excludes": config.excludes or [],
             "toc": config.toc or {},
         }
+        if config.root:
+            data["root"] = config.root
         if config.output:
             data["output"] = config.output
 
@@ -548,6 +557,7 @@ def _generate_config(
         patterns=valid_patterns,
         toc=toc,
         excludes=excludes or [],
+        root=None,
     )
     config_file = root / config_filename
     save_config_to_file(config, config_file)
@@ -631,9 +641,16 @@ class PyBundler:
         self.root = Path(root)
 
         # Load config from files
-        config = load_config_from_file(self.root / config_file) if config_file else None
+        # Load config from files. Accept absolute or relative config paths.
+        config = None
+        if config_file:
+            cfg_path = Path(config_file)
+            if not cfg_path.is_absolute():
+                cfg_path = self.root / cfg_path
+            config = load_config_from_file(cfg_path)
+
         if config is None:
-            config = Config(patterns=patterns, excludes=excludes, toc={})
+            config = Config(patterns=patterns, excludes=excludes, toc={}, root=None)
 
         self.patterns = config.patterns
         self.excludes = config.excludes
@@ -978,8 +995,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--root",
         type=str,
-        default=".",
-        help="Root directory to bundle (default: current dir)",
+        default=None,
+        help="Root directory to bundle (overrides config; default: current dir)",
     )
     parser.add_argument(
         "--patterns",
@@ -1133,7 +1150,28 @@ def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
     _setup_logging(args.verbose)
 
-    root = Path(args.root).resolve()
+    # Determine config path:
+    # - absolute config path is used as-is
+    # - if CLI --root provided and config is relative, resolve relative to that root
+    # - otherwise resolve relative to current working directory
+    if Path(args.config).is_absolute():
+        cfg_path = Path(args.config)
+    elif args.root:
+        cfg_path = Path(args.root) / args.config
+    else:
+        cfg_path = Path.cwd() / args.config
+
+    cfg = load_config_from_file(cfg_path) if cfg_path.exists() else None
+
+    # Determine root precedence: CLI --root > config.root > cwd
+    if args.root:
+        root = Path(args.root).resolve()
+    elif cfg and cfg.root:
+        cfg_root = Path(cfg.root)
+        root = cfg_root.resolve() if cfg_root.is_absolute() else (cfg_path.parent / cfg_root).resolve()
+    else:
+        root = Path.cwd().resolve()
+
     if not root.exists():
         logger.error("Root directory '%s' does not exist.", root)
         return 1
@@ -1149,6 +1187,7 @@ def main(argv: list[str] | None = None) -> int:
             excludes=excludes,
         )
 
+    # Pass the absolute config path into PyBundler so it loads the same config
     bundler = PyBundler(
         root,
         patterns=patterns,
@@ -1156,7 +1195,7 @@ def main(argv: list[str] | None = None) -> int:
         include_hidden=args.include_hidden,
         warn_size=args.warn_size,
         generate_toc=args.toc,
-        config_file=args.config,
+        config_file=str(cfg_path),
         excludes=excludes,
     )
 
