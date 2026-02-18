@@ -1,0 +1,10 @@
+{
+  "patterns": ["src/**/*.py", "README.md", "scripts/*.sh"],
+  "excludes": [".venv/**", "tests/**"],
+  "toc": {
+    "README.md": "Example README for the demo",
+    "src": "Python source files (example)",
+    "src/example.py": "Main example module"
+  },
+  "output": "BUNDLE.md"
+}

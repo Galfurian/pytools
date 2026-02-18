@@ -58,6 +58,7 @@ def check_shebang(file_path):
     Returns:
         bool:
             True if the file has the correct shebang, False otherwise.
+
     """
     with open(file_path) as f:
         first_line = f.readline().strip()
@@ -74,6 +75,7 @@ def check_syntax(file_path):
     Returns:
         bool:
             True if the syntax is valid, False otherwise.
+
     """
     try:
         subprocess.run(
@@ -97,6 +99,7 @@ def check_command_exists(command):
     Returns:
         bool:
             True if the command exists in PATH, False otherwise.
+
     """
     return shutil.which(command) is not None
 
@@ -111,6 +114,7 @@ def install_all_scripts(args):
     Returns:
         bool:
             True if all scripts were installed successfully, False otherwise.
+
     """
     src_dir = Path(__file__).parent / "src"
     if not src_dir.exists():
@@ -189,6 +193,7 @@ def main():
 
     Returns:
         None
+
     """
     handler = logging.StreamHandler()
     handler.setFormatter(ColorFormatter())

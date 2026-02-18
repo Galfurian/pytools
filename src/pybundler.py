@@ -11,16 +11,15 @@ result is intended for copy/paste into LLM/web-UI uploads.
 from __future__ import annotations
 
 import argparse
+import fnmatch
+import json
+import logging
 from collections import defaultdict
 from dataclasses import dataclass
 from datetime import datetime
-import logging
 from pathlib import Path
-import fnmatch
-from typing import Optional
 
-
-DEFAULT_CONFIG_FILENAME = ".bundler.config"
+DEFAULT_CONFIG_FILENAME = ".bundler.json"
 
 logger = logging.getLogger(__name__)
 
@@ -46,31 +45,107 @@ class ColorFormatter(logging.Formatter):
 
 @dataclass
 class Config:
-    """Configuration for pybundler containing patterns and TOC descriptions."""
+    """Configuration for pybundler containing patterns, TOC and optional output.
+
+    Attributes:
+        patterns: List of glob patterns to include.
+        excludes: List of glob patterns to exclude.
+        toc: Mapping of file/folder -> description.
+        output: Optional output path (string). If relative, resolved against `--root`.
+
+    """
 
     patterns: list[str]
     excludes: list[str]
     toc: dict[str, str]
+    output: str | None = None
 
 
 def load_config_from_file(path: Path) -> Config | None:
-    """Load configuration from config files.
+    """Load configuration from a file.
+
+    Supports a simple JSON format (preferred) and falls back to the legacy
+    custom format for backward compatibility (based on file extension).
+
+    JSON format example:
+
+    {
+      "patterns": ["src/**/*.py", "README.md"],
+      "excludes": [".venv/**"],
+      "toc": { "README.md": "Project README", "src": "Source files" },
+      "output": "dist/BUNDLE.md"
+    }
 
     Args:
         path (Path): Path to the config file.
 
     Returns:
-        Config | None: Loaded configuration or None if file does not exist.
-    """
+        Config | None: Loaded configuration or None if file does not exist or
+            parsing fails.
 
+    """
     if not path.exists():
         return None
 
+    suffix = path.suffix.lower()
+
+    # JSON-based configuration (preferred)
+    if suffix == ".json":
+        try:
+            with open(path, encoding="utf-8") as f:
+                data = json.load(f)
+        except Exception as e:
+            logger.warning("Could not parse JSON config %s: %s", path, e)
+            return None
+
+        if not data:
+            return None
+        if not isinstance(data, dict):
+            logger.warning("Invalid JSON config format in %s: expected mapping", path)
+            return None
+
+        # Patterns
+        patterns = data.get("patterns") or []
+        if not isinstance(patterns, list):
+            logger.warning("Invalid 'patterns' in %s: expected list", path)
+            patterns = []
+
+        # Excludes
+        excludes = data.get("excludes") or []
+        if not isinstance(excludes, list):
+            logger.warning("Invalid 'excludes' in %s: expected list", path)
+            excludes = []
+
+        # Output (optional)
+        output = data.get("output")
+        if output is not None and not isinstance(output, str):
+            logger.warning("Invalid 'output' in %s: expected string", path)
+            output = None
+
+        # TOC - accept mapping or list-of-mappings for compatibility
+        toc_raw = data.get("toc") or {}
+        toc: dict[str, str] = {}
+        if isinstance(toc_raw, dict):
+            for k, v in toc_raw.items():
+                if not isinstance(k, str):
+                    logger.warning("Ignoring non-string TOC key in %s: %r", path, k)
+                    continue
+                toc[k.lower()] = "" if v is None else str(v)
+        elif isinstance(toc_raw, list):
+            for item in toc_raw:
+                if isinstance(item, dict):
+                    for k, v in item.items():
+                        toc[str(k).lower()] = "" if v is None else str(v)
+        else:
+            logger.warning("Invalid 'toc' in %s: expected mapping or list", path)
+
+        return Config(patterns=patterns, toc=toc, excludes=excludes, output=output)
+
+    # Legacy (non-JSON) config: keep existing parser for backward compatibility
     section_lines = _extract_config_sections(path)
     if section_lines is None:
         return None
 
-    # Parse sections
     patterns = _load_config_list(
         section_lines.get("patterns", []), _parse_config_item, path, "patterns"
     )
@@ -82,11 +157,7 @@ def load_config_from_file(path: Path) -> Config | None:
     )
     toc = dict(toc_items)
 
-    return Config(
-        patterns=patterns,
-        toc=toc,
-        excludes=excludes,
-    )
+    return Config(patterns=patterns, toc=toc, excludes=excludes)
 
 
 def _extract_config_sections(path: Path) -> dict[str, list[str]] | None:
@@ -97,10 +168,11 @@ def _extract_config_sections(path: Path) -> dict[str, list[str]] | None:
 
     Returns:
         Dict of section names to list of lines, or None if error.
+
     """
     valid_sections = {"patterns", "excludes", "toc"}
     try:
-        with open(path, "r", encoding="utf-8") as f:
+        with open(path, encoding="utf-8") as f:
             current_section = None
             section_lines = defaultdict(list)
 
@@ -155,6 +227,7 @@ def _load_config_list(lines: list[str], parser, path: Path, section_name: str) -
 
     Returns:
         List of parsed items.
+
     """
     result = []
     for line in lines:
@@ -182,6 +255,7 @@ def _parse_config_item(line: str) -> str | None:
 
     Returns:
         The item string or None if invalid.
+
     """
     item = line.strip()
     return item if item else None
@@ -195,6 +269,7 @@ def _parse_config_toc_item(line: str) -> tuple[str, str] | None:
 
     Returns:
         Tuple of (key, description) or None if invalid.
+
     """
     if ":" not in line:
         return None
@@ -207,39 +282,27 @@ def _parse_config_toc_item(line: str) -> tuple[str, str] | None:
 
 
 def save_config_to_file(config: Config, config_file: Path) -> None:
-    """Save configuration to a file.
+    """Save configuration to a JSON file.
 
-    Args:
-        config (Config): The configuration to save.
-        config_file (Path): Path to save the config file.
+    The JSON structure is simple and user-editable. Keys are:
+      - patterns: list
+      - excludes: list
+      - toc: mapping (entry -> description)
+      - output: optional string path
     """
     try:
-        # Ensure the directory exists
         config_file.parent.mkdir(parents=True, exist_ok=True)
+        data: dict = {
+            "patterns": config.patterns or [],
+            "excludes": config.excludes or [],
+            "toc": config.toc or {},
+        }
+        if config.output:
+            data["output"] = config.output
 
         with open(config_file, "w", encoding="utf-8") as f:
-            f.write("# Bundler Configuration File\n")
-            f.write(
-                "# This file defines default patterns and TOC descriptions for your project\n"
-            )
-            f.write("# \n")
-            f.write("# Patterns section: list of glob patterns to include by default\n")
-            f.write("patterns:\n")
-            for pattern in config.patterns:
-                f.write(f"  - {pattern}\n")
-            f.write("# \n")
-            f.write(
-                "# TOC section: descriptions for folders/files in table of contents\n"
-            )
-            f.write("toc:\n")
-            for entry in sorted(config.toc.keys()):
-                description = config.toc[entry]
-                f.write(f"  - {entry}: {description}\n")
-            f.write("# \n")
-            f.write("# Exclude section: patterns to excludes from bundling\n")
-            f.write("excludes:\n")
-            for pattern in config.excludes:
-                f.write(f"  - {pattern}\n")
+            json.dump(data, f, indent=2, ensure_ascii=False)
+            f.write("\n")
     except Exception as e:
         raise RuntimeError(f"Failed to save config file {config_file}: {e}")
 
@@ -252,9 +315,10 @@ def _parse_pattern_modifier(pattern: str) -> tuple[str, int | None]:
 
     Returns:
         tuple[str, int | None]: (base_pattern, limit) where limit is positive for first n, negative for last n, None for no limit.
+
     """
     import re
-    match = re.search(r'\[([+-]?\d+)\]$', pattern)
+    match = re.search(r"\[([+-]?\d+)\]$", pattern)
     if match:
         base = pattern[:match.start()]
         limit = int(match.group(1))
@@ -266,8 +330,8 @@ def _collect_files(
     root: Path,
     patterns: list[str],
     include_hidden: bool = False,
-    max_file_size: Optional[int] = None,
-    excludes: Optional[list[str]] = None,
+    max_file_size: int | None = None,
+    excludes: list[str] | None = None,
 ) -> list[Path]:
     """
     Collect files under `root` matching `patterns`, excluding hidden files,
@@ -321,7 +385,7 @@ def _collect_files(
                 files_for_pattern = set(sorted_files[:limit])
             elif limit < 0:
                 files_for_pattern = set(sorted_files[limit:])
-        
+
         for path in files_for_pattern:
             logger.debug("    - %s", path)
 
@@ -340,6 +404,7 @@ def _is_excluded(path: Path, root: Path, excludes: list[str]) -> bool:
 
     Returns:
         bool: True if the path matches any exclude pattern.
+
     """
     rel_path = str(path.relative_to(root))
     for pat in excludes:
@@ -364,6 +429,7 @@ def _generate_config_toc_entries(
 
     Returns:
         Dictionary mapping TOC entry names to descriptions (initially empty strings).
+
     """
     toc = {}
 
@@ -384,6 +450,7 @@ def _add_directory_toc_entry(toc: dict[str, str], dir_name: str) -> None:
     Args:
         toc: The TOC dict to update.
         dir_name: Directory name.
+
     """
     if "/" in dir_name:
         toc[dir_name.split("/")[0]] = ""
@@ -398,6 +465,7 @@ def _add_glob_toc_entries(toc: dict[str, str], all_files: set[Path], root: Path)
         toc: The TOC dict to update.
         all_files: Set of all files.
         root: Root path.
+
     """
     for f in all_files:
         try:
@@ -418,6 +486,7 @@ def _add_specific_toc_entry(toc: dict[str, str], root: Path, pattern: str) -> No
         toc: The TOC dict to update.
         root: Root path.
         pattern: The pattern.
+
     """
     path_obj = root / pattern
     if path_obj.exists():
@@ -452,6 +521,7 @@ def _generate_config(
     Returns:
         int:
             Exit code (0 for success).
+
     """
     # Collect files from all patterns
     valid_patterns = patterns
@@ -520,6 +590,7 @@ class PyBundler:
             Optional descriptions for files/folders in TOC, loaded from .bundler.toc file.
         output_lines (list[str]):
             Internal list to accumulate markdown output lines.
+
     """
 
     def __init__(
@@ -552,6 +623,7 @@ class PyBundler:
                 List of config file paths to load. Uses default .bundler.config if not specified.
             excludes (list[str]):
                 List of glob patterns to excludes from bundling. Applied after inclusion patterns.
+
         """
         self.root = Path(root)
 
@@ -582,6 +654,7 @@ class PyBundler:
                 The header text.
             level (int):
                 The header level (1-6). Defaults to 2.
+
         """
         if level > 1:
             self.add_text("")
@@ -594,6 +667,7 @@ class PyBundler:
         Args:
             text (str):
                 The text to add.
+
         """
         self.output_lines.append(text + "\n")
 
@@ -616,6 +690,7 @@ class PyBundler:
         Returns:
             str:
                 The complete markdown output.
+
         """
         self.fix_text()
         return "".join(self.output_lines)
@@ -627,6 +702,7 @@ class PyBundler:
             tuple[list[Path], list[str]]:
                 Tuple of (files, warnings) where warnings contains messages for files
                 exceeding the warn_size threshold.
+
         """
         warnings: list[str] = []
         for f in self._files:
@@ -668,6 +744,7 @@ class PyBundler:
 
         Returns:
             set[str]: Set of directory patterns.
+
         """
         directory_patterns = set()
         for pattern in self.patterns:
@@ -694,6 +771,7 @@ class PyBundler:
 
         Returns:
             str: Relative path as string.
+
         """
         try:
             rel = file_path.relative_to(self.root)
@@ -707,6 +785,7 @@ class PyBundler:
         Args:
             files (list[Path]):
                 List of files to include in the TOC.
+
         """
         if not self._files:
             logger.error("No files collected for TOC generation.")
@@ -733,6 +812,7 @@ class PyBundler:
 
         Returns:
             tuple[set[str], set[str]]: (toc_entries, individual_files)
+
         """
         toc_entries = set()
         individual_files = set()
@@ -759,6 +839,7 @@ class PyBundler:
         Args:
             f (Path): The file to add.
             header_level (int): The header level for the file.
+
         """
         try:
             rel = f.relative_to(self.root)
@@ -792,6 +873,7 @@ class PyBundler:
         Args:
             dir_pattern (str): The directory pattern.
             dir_files (list[Path]): List of files in this directory.
+
         """
         if not dir_files:
             return
@@ -835,6 +917,7 @@ class PyBundler:
         Returns:
             Path:
                 The path to the created output file.
+
         """
         self.add_header("Project Bundle for LLM", level=1)
         self.add_text(
@@ -885,6 +968,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     Returns:
         argparse.Namespace:
             Parsed arguments.
+
     """
     parser = argparse.ArgumentParser(
         description="Bundle project files into a single markdown for LLM ingestion."
@@ -941,13 +1025,13 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--config",
         type=str,
         default=DEFAULT_CONFIG_FILENAME,
-        help=f"Configuration file(s) to use (can be specified multiple times).",
+        help="Configuration file(s) to use (can be specified multiple times).",
     )
     parser.add_argument(
         "--output",
         type=str,
-        default="BUNDLE.md",
-        help="Output markdown filename",
+        default=None,
+        help="Output markdown filename (overrides config)",
     )
     parser.add_argument(
         "--verbose",
@@ -967,6 +1051,7 @@ def _setup_logging(verbose: bool) -> None:
 
     Args:
         verbose (bool): Enable debug logging if True.
+
     """
     handler = logging.StreamHandler()
     handler.setFormatter(ColorFormatter("%(levelname)s: %(message)s"))
@@ -982,6 +1067,7 @@ def _parse_patterns_and_excludes(args) -> tuple[list[str], list[str]]:
 
     Returns:
         tuple[list[str], list[str]]: (patterns, excludes)
+
     """
     patterns = [p.strip() for p in args.patterns.split(",") if p.strip()]
     excludes = [p.strip() for p in args.excludes.split(",") if p.strip()]
@@ -993,6 +1079,7 @@ def _log_bundle_stats(output: Path) -> None:
 
     Args:
         output (Path): The output file.
+
     """
     file_size_kb = output.stat().st_size / 1024
 
@@ -1022,11 +1109,11 @@ def _format_patterns_display(patterns: list[str]) -> str:
 
     Returns:
         str: Formatted display string.
+
     """
     if len(patterns) <= 3:
         return str(patterns)
-    else:
-        return f"[{patterns[0]}, {patterns[1]}, {patterns[2]}, ...] ({len(patterns)} total)"
+    return f"[{patterns[0]}, {patterns[1]}, {patterns[2]}, ...] ({len(patterns)} total)"
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -1039,6 +1126,7 @@ def main(argv: list[str] | None = None) -> int:
     Returns:
         int:
             Exit code (0 for success).
+
     """
     args = parse_args(argv)
     _setup_logging(args.verbose)
@@ -1069,7 +1157,16 @@ def main(argv: list[str] | None = None) -> int:
         config_file=args.config,
         excludes=excludes,
     )
-    out_path = Path(args.output)
+
+    # Determine output path precedence: CLI > config > default ('BUNDLE.md' in CWD)
+    if args.output:
+        out_candidate = Path(args.output)
+        out_path = out_candidate if out_candidate.is_absolute() else Path.cwd() / out_candidate
+    elif bundler.output:
+        out_candidate = Path(bundler.output)
+        out_path = out_candidate if out_candidate.is_absolute() else bundler.root / out_candidate
+    else:
+        out_path = Path("BUNDLE.md")  # current working directory
 
     patterns_display = _format_patterns_display(bundler.patterns)
     logger.info("Bundling files from %s using patterns: %s", root, patterns_display)

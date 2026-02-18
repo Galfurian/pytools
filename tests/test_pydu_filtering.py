@@ -2,9 +2,10 @@
 
 import argparse
 import copy
+
 import pytest
 
-from pydu import node_matches, filter_tree, TreeNode, NodeType
+from pydu import NodeType, TreeNode, filter_tree, node_matches
 
 
 @pytest.fixture

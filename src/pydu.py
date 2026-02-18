@@ -16,9 +16,9 @@ import pwd
 import stat
 import sys
 import time
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Callable
 
 logger = logging.getLogger(__name__)
 
@@ -428,6 +428,7 @@ def process_patterns(patterns):
     Returns:
         list[str]:
             List of stripped, non-empty patterns
+
     """
     processed_patterns = []
     for pattern in patterns:
@@ -453,6 +454,7 @@ def _create_node_from_stat(
 
     Returns:
         TreeNode: The created node.
+
     """
     return TreeNode(
         name=name,
@@ -492,6 +494,7 @@ def build_tree(
         TreeNode:
             Root TreeNode representing the directory/file at the given path,
             containing its total size and child nodes
+
     """
     # Create the TreeNode first so we can pass it as parent to recursive calls
     root_stat = os.lstat(path)
@@ -573,6 +576,7 @@ def node_matches(node: TreeNode, args: argparse.Namespace) -> bool:
     Returns:
         bool:
             True if the node matches the filters, False otherwise.
+
     """
     # Include/exclude by name patterns
     name = node.name
@@ -634,6 +638,7 @@ def filter_tree(node: TreeNode, args: argparse.Namespace) -> TreeNode | None:
     Returns:
         TreeNode | None:
             The filtered tree node, or None if it doesn't match filters.
+
     """
     # Files and symlinks: simple match
     if node.node_type in (NodeType.FILE, NodeType.SYMLINK):
@@ -669,6 +674,7 @@ def sort_key_size(node: TreeNode) -> int:
     Returns:
         int:
             The size in bytes for sorting.
+
     """
     return node.size
 
@@ -683,6 +689,7 @@ def sort_key_mtime(node: TreeNode) -> float:
     Returns:
         float:
             The modification time as Unix timestamp for sorting.
+
     """
     return node.mtime
 
@@ -697,6 +704,7 @@ def sort_key_name(node: TreeNode) -> str:
     Returns:
         str:
             The node name for sorting.
+
     """
     return node.name
 
@@ -710,6 +718,7 @@ def _format_node_line(node: TreeNode, args) -> str:
 
     Returns:
         str: The formatted line.
+
     """
     # Format size with optional coloring
     if node.original_size != node.size:
@@ -762,6 +771,7 @@ def print_tree(
 
     Returns:
         None
+
     """
     if args.max_depth is not None and node.depth > args.max_depth:
         return
@@ -815,6 +825,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     Returns:
         argparse.Namespace:
             Parsed arguments.
+
     """
     parser = argparse.ArgumentParser(
         description="Improved disk usage analyzer with tree-like output and coloring.",
@@ -936,6 +947,7 @@ def _setup_args_and_logging(args) -> None:
 
     Args:
         args: Parsed arguments.
+
     """
     # Process comma-separated exclude and include patterns.
     args.exclude = process_patterns(args.exclude)
@@ -959,6 +971,7 @@ def _parse_filters(args) -> None:
 
     Raises:
         SystemExit: If parsing fails.
+
     """
     try:
         if args.min_size:
@@ -984,6 +997,7 @@ def main() -> None:
 
     Returns:
         None
+
     """
     args = parse_args()
     _setup_args_and_logging(args)

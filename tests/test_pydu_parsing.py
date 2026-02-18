@@ -1,6 +1,7 @@
 """Tests for pydu module."""
 
 import pytest
+
 from pydu import parse_size, parse_time_duration, process_patterns
 
 

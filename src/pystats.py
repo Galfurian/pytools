@@ -7,13 +7,12 @@ Highlights files approaching LLM context windows, supports filtering and output 
 """
 
 import argparse
-import os
-import sys
-import pathlib
-import re
-import json
 import csv
+import json
 import logging
+import os
+import re
+import sys
 from collections import defaultdict
 
 logger = logging.getLogger(__name__)
@@ -68,13 +67,14 @@ def is_text_file(filepath):
     Returns:
         bool:
             True if the file appears to be text, False otherwise.
+
     """
     try:
         with open(filepath, "rb") as f:
             data = f.read(1024)
             if b"\x00" in data:
                 return False
-        with open(filepath, "r", encoding="utf-8") as f:
+        with open(filepath, encoding="utf-8") as f:
             f.read(1024)
         return True
     except Exception:
@@ -91,6 +91,7 @@ def word_count(text):
     Returns:
         int:
             The number of words.
+
     """
     return len(re.findall(r"\b\w+\b", text))
 
@@ -107,6 +108,7 @@ def token_estimate(text):
     Returns:
         int:
             The estimated number of tokens.
+
     """
     # Simple: split on sequences of non-whitespace for GPT-like counting
     return len(re.findall(r"\S+", text))
@@ -124,8 +126,9 @@ def detect_comment_lines(text, ext):
     Returns:
         int:
             The number of comment lines.
+
     """
-    comment_prefix = COMMENT_SYNTAX_MAP.get(ext, None)
+    comment_prefix = COMMENT_SYNTAX_MAP.get(ext)
     if not comment_prefix:
         return 0
     return sum(
@@ -143,10 +146,11 @@ def safe_open(filepath):
     Returns:
         str:
             The file content as a string, or empty string if failed.
+
     """
     for encoding in ("utf-8", "latin-1", "ascii"):
         try:
-            with open(filepath, "r", encoding=encoding) as f:
+            with open(filepath, encoding=encoding) as f:
                 return f.read()
         except Exception:
             continue
@@ -161,6 +165,7 @@ class FileStats:
         Args:
             path (str):
                 Path to the file to analyze.
+
         """
         self.path = path
         self.ext = os.path.splitext(path)[1]
@@ -180,6 +185,7 @@ class FileStats:
         Args:
             llm_limit (int):
                 Token limit for LLM context window check.
+
         """
         try:
             text = safe_open(self.path)
@@ -208,6 +214,7 @@ class FileStats:
         Returns:
             float:
                 Percentage of comment lines, rounded to 1 decimal place.
+
         """
         try:
             return round(100 * self.comment_lines / max(self.lines, 1), 1)
@@ -220,6 +227,7 @@ class FileStats:
         Returns:
             dict:
                 Dictionary representation of the file statistics.
+
         """
         return {
             "file": self.relpath or self.path,
@@ -256,6 +264,7 @@ def walk_directory(root, exts, exclude_dirs, include_hidden, force_binary, relpa
     Returns:
         list[FileStats]:
             List of FileStats objects for the matching files.
+
     """
     stats_list = []
     for dirpath, dirnames, filenames in os.walk(root):
@@ -299,6 +308,7 @@ def print_table(stats_list, llm_limit, group_ext, sort_by, summary):
             Attribute to sort by (e.g., 'lines', 'tokens').
         summary (bool):
             Whether to show summary warnings.
+
     """
     # Determine max file name length for column width
     file_len = max(len(fs.relpath) for fs in stats_list) if stats_list else 4
@@ -378,6 +388,7 @@ def write_json(stats_list, outfile):
             List of FileStats to write.
         outfile (str):
             Path to the output JSON file.
+
     """
     with open(outfile, "w", encoding="utf-8") as f:
         f.write(json.dumps([fs.to_dict() for fs in stats_list], indent=2))
@@ -391,6 +402,7 @@ def write_csv(stats_list, outfile):
             List of FileStats to write.
         outfile (str):
             Path to the output CSV file.
+
     """
     hdr = [
         "file",
@@ -422,6 +434,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     Returns:
         argparse.Namespace:
             Parsed command-line arguments.
+
     """
     parser = argparse.ArgumentParser(
         description="pystats: file statistics tool for LLM and dev workflows."
@@ -513,6 +526,7 @@ def main():
 
     Returns:
         None
+
     """
     # Setup logging with color
     handler = logging.StreamHandler()
@@ -566,6 +580,7 @@ def main():
         Returns:
             bool:
                 True if the file meets the filter criteria, False otherwise.
+
         """
         if args.min_words is not None and fs.words < args.min_words:
             return False

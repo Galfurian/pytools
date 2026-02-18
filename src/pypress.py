@@ -10,12 +10,10 @@ This script provides a command-line tool to compress files or directories into
 import argparse
 import hashlib
 import logging
-import os
 import sys
 import tarfile
 import time
 import zipfile
-from multiprocessing import Pool, cpu_count
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
@@ -175,6 +173,7 @@ def verify_archive(archive_path: Path) -> bool:
 
     Returns:
         bool: True if verification passes, False otherwise.
+
     """
     try:
         if archive_path.suffix == ".gz" or ".tar.gz" in str(archive_path):
@@ -246,6 +245,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     Returns:
         argparse.Namespace:
             Parsed arguments.
+
     """
     parser = argparse.ArgumentParser(
         description="Compress a file or folder into a .tar.gz or .zip archive."
@@ -297,6 +297,7 @@ def main():
 
     Returns:
         None
+
     """
     args = parse_args()
 

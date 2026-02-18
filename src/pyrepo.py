@@ -207,7 +207,7 @@ def get_special_git_states(repo_path):
     # Check for detached HEAD
     head_file = os.path.join(repo_path, ".git", "HEAD")
     if os.path.exists(head_file):
-        with open(head_file, "r") as f:
+        with open(head_file) as f:
             head_content = f.read().strip()
             if not head_content.startswith("ref: refs/heads/"):
                 states.append("detached HEAD")
@@ -215,9 +215,7 @@ def get_special_git_states(repo_path):
     # Check for rebase in progress
     rebase_merge = os.path.join(repo_path, ".git", "rebase-merge")
     rebase_apply = os.path.join(repo_path, ".git", "rebase-apply")
-    if os.path.exists(rebase_merge):
-        states.append("rebase in progress")
-    elif os.path.exists(rebase_apply):
+    if os.path.exists(rebase_merge) or os.path.exists(rebase_apply):
         states.append("rebase in progress")
 
     return states if states else None
@@ -300,6 +298,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     Returns:
         argparse.Namespace:
             Parsed arguments.
+
     """
     parser = argparse.ArgumentParser(
         description="Check git repositories for uncommitted changes and unpushed branches."
@@ -327,6 +326,7 @@ def main():
 
     Returns:
         None
+
     """
     args = parse_args()
 
@@ -365,7 +365,7 @@ def main():
                     or repo["untracked"]
                     or repo["special_states"]
                 )
-                print("")
+                print()
                 if is_unstable:
                     logger.error(f"Path  : {fullpath}:")
                 elif repo["stale_days"]:
@@ -395,11 +395,10 @@ def main():
                         logger.warning(f"    {state}")
                 if repo["stale_days"] is not None:
                     logger.warning(f"  {repo['stale_days']} days since last commit")
+    elif args.summary:
+        print("No Git repositories found.")
     else:
-        if args.summary:
-            print("No Git repositories found.")
-        else:
-            logger.info("No Git repositories found.")
+        logger.info("No Git repositories found.")
 
 
 if __name__ == "__main__":
