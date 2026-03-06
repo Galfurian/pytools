@@ -156,7 +156,9 @@ def load_config_from_file(path: Path) -> Config | None:
             output,
         )
 
-        return Config(patterns=patterns, toc=toc, excludes=excludes, root=cfg_root, output=output)
+        return Config(
+            patterns=patterns, toc=toc, excludes=excludes, root=cfg_root, output=output
+        )
 
     # Legacy (non-JSON) config: keep existing parser for backward compatibility
     logger.debug("Falling back to legacy config parser for %s", path)
@@ -369,12 +371,16 @@ def _collect_files(
     oversized files, and those matching `excludes`.
 
     Patterns can include modifiers: [+n] to keep first n files, [-n] to keep last n files.
-    Files are sorted by path before applying limits.
+    Files are sorted by path before applying limits.  The resulting list preserves
+    the order of the input patterns; when multiple patterns match the same file
+    the first encounter is kept and duplicates are discarded.
     """
     if not root.exists():
         return []
 
-    matched_files = set()
+    # use a list to preserve the order of patterns; a set tracks seen files
+    matched_files: list[Path] = []
+    seen: set[Path] = set()
 
     logger.debug("Collecting files from root: %s", root)
     logger.debug("Using patterns: %s", patterns)
@@ -386,7 +392,9 @@ def _collect_files(
     for pattern in patterns:
         base_pattern, limit = _parse_pattern_modifier(pattern)
         logger.debug("  Processing pattern: `%s` (limit: %s)...", base_pattern, limit)
-        files_for_pattern = set()
+
+        # gather candidates for this pattern
+        candidates: list[Path] = []
         for path in root.glob(base_pattern):
             if not path.is_file():
                 continue
@@ -409,7 +417,9 @@ def _collect_files(
                         )
                         continue
                 except OSError:
-                    logger.debug("Could not stat file %s for size check (skipping)", path)
+                    logger.debug(
+                        "Could not stat file %s for size check (skipping)", path
+                    )
                     continue
 
             # Skip excluded files
@@ -417,22 +427,25 @@ def _collect_files(
                 logger.debug("Skipping excluded file: %s", path)
                 continue
 
-            files_for_pattern.add(path.resolve())
+            candidates.append(path.resolve())
 
-        # Apply limit if specified
+        # sort candidates before applying a limit, just like previous behavior
         if limit is not None:
-            sorted_files = sorted(files_for_pattern)
+            sorted_candidates = sorted(candidates)
             if limit > 0:
-                files_for_pattern = set(sorted_files[:limit])
+                candidates = sorted_candidates[:limit]
             elif limit < 0:
-                files_for_pattern = set(sorted_files[limit:])
+                candidates = sorted_candidates[limit:]
 
-        for path in files_for_pattern:
+        # append to results in the order patterns were seen, skipping duplicates
+        for path in candidates:
+            if path in seen:
+                continue
             logger.debug("    - %s", path)
+            seen.add(path)
+            matched_files.append(path)
 
-        matched_files.update(files_for_pattern)
-
-    return sorted(matched_files)
+    return matched_files
 
 
 def _is_excluded(path: Path, root: Path, excludes: list[str]) -> bool:
@@ -801,28 +814,40 @@ class PyBundler:
             if not grouped:
                 self._files_by_directory[None].append(file_path)
 
-    def _get_directory_patterns(self) -> set[str]:
+    def _get_directory_patterns(self) -> list[str]:
         """Identify directory patterns from self.patterns.
 
+        The returned list preserves the order in which the patterns appeared in
+        the original configuration.  Duplicate directory entries are removed
+        while keeping the first occurrence.
+
         Returns:
-            set[str]: Set of directory patterns.
+            list[str]: Ordered list of directory patterns.
 
         """
-        directory_patterns = set()
+        seen: set[str] = set()
+        directory_patterns: list[str] = []
+
         for pattern in self.patterns:
+            dir_pat: str | None = None
             if "*" not in pattern and "?" not in pattern:
                 path_obj = self.root / pattern
                 if path_obj.exists() and path_obj.is_dir():
-                    directory_patterns.add(pattern.rstrip("/") + "/")
+                    dir_pat = pattern.rstrip("/") + "/"
             elif pattern.endswith("/") and "*" not in pattern and "?" not in pattern:
-                directory_patterns.add(pattern)
+                dir_pat = pattern
             elif "**" in pattern:
                 if pattern.endswith("/**"):
-                    directory_patterns.add(pattern[:-3] + "/")
+                    dir_pat = pattern[:-3] + "/"
                 elif "/**" in pattern:
                     dir_part = pattern.split("/**")[0]
                     if dir_part:
-                        directory_patterns.add(dir_part.rstrip("/") + "/")
+                        dir_pat = dir_part.rstrip("/") + "/"
+
+            if dir_pat and dir_pat not in seen:
+                seen.add(dir_pat)
+                directory_patterns.append(dir_pat)
+
         return directory_patterns
 
     def _get_relative_path_str(self, file_path: Path) -> str:
@@ -841,13 +866,26 @@ class PyBundler:
         except Exception:
             return file_path.name
 
+    def _find_group_for_file(self, file_path: Path) -> str | None:
+        """Return the directory pattern that applies to *file_path*.
+
+        The patterns are examined in the same order returned by
+        :meth:`_get_directory_patterns` so the first matching group will be
+        selected.  Returns ``None`` if the file does not belong to any group.
+        """
+        rel_str = self._get_relative_path_str(file_path)
+        for dir_pattern in self._get_directory_patterns():
+            dir_path = dir_pattern.rstrip("/")
+            if rel_str == dir_path or rel_str.startswith(dir_path + "/"):
+                return dir_pattern
+        return None
+
     def _generate_toc(self) -> None:
         """Generate table of contents for the bundled files.
 
-        Args:
-            files (list[Path]):
-                List of files to include in the TOC.
-
+        Entries appear in the same sequence that files were collected (pattern
+        order).  We collapse entries to their top-level component and honour any
+        descriptions defined in ``self.toc``.
         """
         if not self._files:
             logger.error("No files collected for TOC generation.")
@@ -855,19 +893,27 @@ class PyBundler:
 
         self.add_header("Table of Contents", level=2)
 
-        toc_entries, individual_files = self._collect_toc_entries()
+        seen: set[str] = set()
+        for f in self._files:
+            rel_str = self._get_relative_path_str(f)
+            if "/" in rel_str:
+                entry = rel_str.split("/")[0]
+            else:
+                entry = rel_str
 
-        # Generate TOC entries - individual files first, then grouped folders
-        all_entries = sorted(individual_files) + sorted(
-            toc_entries - set(entry.split("/")[0] for entry in individual_files)
-        )
+            # individual files with explicit descriptions override folder entries
+            if self.toc and self.toc.get(rel_str.lower()):
+                entry = rel_str
 
-        for entry in all_entries:
+            if entry in seen:
+                continue
+            seen.add(entry)
+
             description = self.toc.get(entry.lower()) if self.toc else None
             if description:
                 self.add_text(f"- **{entry}** - {description}")
             else:
-                self.add_text(f"- {entry}")
+                self.add_text(f"- **{entry}**")
 
     def _collect_toc_entries(self) -> tuple[set[str], set[str]]:
         """Collect TOC entries from files.
@@ -932,9 +978,13 @@ class PyBundler:
     def _process_directory_group(self, dir_pattern: str, dir_files: list[Path]) -> None:
         """Process a group of files under a directory pattern.
 
+        The order of ``dir_files`` is significant and should be preserved; it is
+        usually derived from the overall file list, which itself now respects the
+        pattern order.
+
         Args:
             dir_pattern (str): The directory pattern.
-            dir_files (list[Path]): List of files in this directory.
+            dir_files (list[Path]): Ordered list of files in this directory.
 
         """
         if not dir_files:
@@ -950,8 +1000,8 @@ class PyBundler:
             level=2,
         )
 
-        # Process files in this directory
-        for f in sorted(dir_files):
+        # Process files in the order provided
+        for f in dir_files:
             self._add_file_content(f, header_level=3)
 
     def _process_ungrouped_files(self) -> None:
@@ -992,7 +1042,9 @@ class PyBundler:
             self.excludes,
         )
 
-        logger.debug("Collected %d files for bundling (root=%s)", len(self._files), self.root)
+        logger.debug(
+            "Collected %d files for bundling (root=%s)", len(self._files), self.root
+        )
 
         if not self._files:
             self.add_text("No files found. Nothing to bundle.")
@@ -1005,17 +1057,33 @@ class PyBundler:
             logger.debug("Generating TOC for %d files", len(self._files))
             self._generate_toc()
 
-        # Group files by directory for hierarchical output
-        logger.debug("Grouping %d files by directory patterns", len(self._files))
-        self._group_files_by_directory()
+        # Determine directory patterns in pattern order and map files to groups
+        directory_patterns = self._get_directory_patterns()
+        files_by_group: dict[str, list[Path]] = {pat: [] for pat in directory_patterns}
+        for f in self._files:
+            grp = self._find_group_for_file(f)
+            if grp:
+                files_by_group.setdefault(grp, []).append(f)
 
-        # Process grouped files (directory headers)
-        for dir_pattern, dir_files in self._files_by_directory.items():
-            if dir_pattern is not None:
-                self._process_directory_group(dir_pattern, dir_files)
-
-        # Process ungrouped files (individual files not under directory headers)
-        self._process_ungrouped_files()
+        # Write files sequentially.  When a new group is encountered we emit its
+        # header (using all known files for that group).  A `written` set keeps
+        # track of files already output so we don’t duplicate group members.
+        current_group: str | None = None
+        written: set[Path] = set()
+        for f in self._files:
+            if f in written:
+                continue
+            grp = self._find_group_for_file(f)
+            if grp != current_group:
+                current_group = grp
+                if grp is not None:
+                    group_files = files_by_group.get(grp, [])
+                    self._process_directory_group(grp, group_files)
+                    written.update(group_files)
+                    continue
+            # ungrouped file
+            self._add_file_content(f, header_level=2)
+            written.add(f)
 
         logger.debug("Writing bundle to %s", output)
         output.parent.mkdir(parents=True, exist_ok=True)
@@ -1214,7 +1282,11 @@ def main(argv: list[str] | None = None) -> int:
         root = Path(args.root).resolve()
     elif cfg and cfg.root:
         cfg_root = Path(cfg.root)
-        root = cfg_root.resolve() if cfg_root.is_absolute() else (cfg_path.parent / cfg_root).resolve()
+        root = (
+            cfg_root.resolve()
+            if cfg_root.is_absolute()
+            else (cfg_path.parent / cfg_root).resolve()
+        )
     else:
         root = Path.cwd().resolve()
 
