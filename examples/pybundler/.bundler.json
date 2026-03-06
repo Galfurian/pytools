@@ -1,8 +1,9 @@
 {
     "patterns": [
         "src/**/*.py",
-        "README.md",
-        "scripts/*.sh"
+        "scripts/*.sh",
+        "data/**/*4*.md",
+        "README.md"
     ],
     "excludes": [
         ".venv/**",
