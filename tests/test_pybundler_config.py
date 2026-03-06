@@ -144,6 +144,20 @@ def test_collect_files_pattern_order(tmp_path: Path):
     assert files == [a, b]
 
 
+def test_collect_files_lexicographic_order_without_modifier(tmp_path: Path):
+    """Glob matches should be lexicographically sorted without modifiers."""
+    data_dir = tmp_path / "data"
+    data_dir.mkdir()
+    file_41 = data_dir / "file41.md"
+    file_40 = data_dir / "file40.md"
+    file_41.write_text("41", encoding="utf-8")
+    file_40.write_text("40", encoding="utf-8")
+
+    files = _collect_files(tmp_path, ["data/**/*4*.md"])
+
+    assert files == [file_40, file_41]
+
+
 def test_bundle_respects_pattern_order(tmp_path: Path):
     """Bundled output must follow the order of the patterns list."""
     # create several files in different locations

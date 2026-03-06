@@ -429,13 +429,17 @@ def _collect_files(
 
             candidates.append(path.resolve())
 
-        # sort candidates before applying a limit, just like previous behavior
+        # Always sort candidates lexicographically for deterministic output.
+        # Limit modifiers are then applied against this ordered list.
+        sorted_candidates = sorted(candidates)
+
         if limit is not None:
-            sorted_candidates = sorted(candidates)
             if limit > 0:
                 candidates = sorted_candidates[:limit]
             elif limit < 0:
                 candidates = sorted_candidates[limit:]
+        else:
+            candidates = sorted_candidates
 
         # append to results in the order patterns were seen, skipping duplicates
         for path in candidates:
