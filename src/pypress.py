@@ -1,409 +1,823 @@
 #!/usr/bin/env python3
-
 """
-Compress a file or folder into a .tar.gz or .zip archive.
+pypack.py — stdlib-only pack/unpack with safe defaults.
 
-This script provides a command-line tool to compress files or directories into
-.tar.gz or .zip archives with optional output paths and format selection.
+Goals
+- Standard library only (no external tools, no third-party deps).
+- "Do-all" within stdlib limits:
+  - Archives: .zip, .tar
+  - Compressed tars: .tar.gz/.tgz, .tar.bz2/.tbz2/.tbz, .tar.xz/.txz (if Python has lzma)
+  - Single-file compression: .gz, .bz2, .xz (if lzma available)
+- Safe-by-default:
+  - Refuse overwrite unless -f/--force is passed
+  - Safe extraction (prevents path traversal / zip-slip / tar-slip)
+- Auto-detect by extension first, then simple magic sniff for zip/gz/bz2/xz when needed.
+- Optional niceties inspired by your script:
+  - colored logging
+  - --older-than filtering when packing directories
+  - --verify after pack (reads members / checks ZIP CRC)
+  - --move deletes sources after successful pack
+
+Notes / Limits (stdlib reality)
+- No support for: .7z .rar .zst
+- "Magic" detection is limited; extension detection is primary.
+- lzma may be unavailable on some minimal Python builds; .xz support will be disabled gracefully.
 """
+
+from __future__ import annotations
 
 import argparse
-import hashlib
+import bz2
+import gzip
 import logging
-import sys
+import shutil
 import tarfile
 import time
 import zipfile
 from pathlib import Path
+from typing import Iterable, Optional, Sequence
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("pypack")
+
+# ---------------------------
+# Logging (inspired by yours)
+# ---------------------------
 
 
 class ColorFormatter(logging.Formatter):
-    """
-    Custom logging formatter that adds ANSI color codes to log messages.
-
-    This formatter applies color coding based on log levels for better
-    readability in terminal output.
-    """
-
     COLORS = {
-        logging.INFO: "\033[32m",  # Green
-        logging.WARNING: "\033[33m",  # Yellow
-        logging.ERROR: "\033[31m",  # Red
-        logging.CRITICAL: "\033[41m",  # Red background
+        logging.INFO: "\033[32m",  # green
+        logging.WARNING: "\033[33m",  # yellow
+        logging.ERROR: "\033[31m",  # red
+        logging.CRITICAL: "\033[41m",  # red bg
     }
     RESET = "\033[0m"
 
     def format(self, record: logging.LogRecord) -> str:
-        """
-        Format the log record with colors.
-
-        Args:
-            record (logging.LogRecord):
-                The log record to format.
-
-        Returns:
-            str:
-                The formatted log message with ANSI color codes.
-
-        """
         color = self.COLORS.get(record.levelno, "")
-        message = super().format(record)
-        if color:
-            message = f"{color}{message}{self.RESET}"
-        return message
+        msg = super().format(record)
+        return f"{color}{msg}{self.RESET}" if color else msg
+
+
+def setup_logging(verbose: int) -> None:
+    handler = logging.StreamHandler()
+    handler.setFormatter(ColorFormatter("%(levelname)s: %(message)s"))
+    logger.handlers[:] = [handler]
+    logger.setLevel(logging.DEBUG if verbose >= 1 else logging.INFO)
+
+
+# ---------------------------
+# Duration parsing (yours)
+# ---------------------------
 
 
 def parse_time_duration(duration_str: str) -> float:
     """
-    Parse human-readable time duration into seconds.
+    Parse human-readable duration into seconds.
 
-    Supports formats like '30d', '1w', '2M', '1y' for days, weeks, months, years.
-
-    Args:
-        duration_str (str):
-            Duration string to parse (e.g., '30d', '1w', '2M', '1y')
-
-    Returns:
-        float:
-            Duration in seconds
-
-    Raises:
-        ValueError: If the duration string format is invalid
-
-    Examples:
-        >>> parse_time_duration('30d')
-        2592000.0
-        >>> parse_time_duration('1w')
-        604800.0
-
+    Supports: Ns, Nh, Nd, Nw, NM, Ny (case-insensitive)
+    - M = 30 days (approx), y = 365 days (approx)
     """
     if not duration_str:
-        return 0
+        return 0.0
 
-    duration_str = duration_str.strip().upper()
-
-    # Define time multipliers (approximate)
+    s = duration_str.strip().upper()
     multipliers = {
-        "S": 1,  # seconds
-        "M": 30 * 24 * 3600,  # months (30 days)
-        "W": 7 * 24 * 3600,  # weeks
-        "D": 24 * 3600,  # days
-        "H": 3600,  # hours
-        "Y": 365 * 24 * 3600,  # years (365 days)
+        "S": 1,
+        "H": 3600,
+        "D": 24 * 3600,
+        "W": 7 * 24 * 3600,
+        "M": 30 * 24 * 3600,  # month ~ 30 days
+        "Y": 365 * 24 * 3600,  # year ~ 365 days
     }
 
-    for unit, multiplier in multipliers.items():
-        if duration_str.endswith(unit):
+    for unit, mul in multipliers.items():
+        if s.endswith(unit):
+            val = s[: -len(unit)].strip()
             try:
-                value_str = duration_str[: -len(unit)].strip()
-                value = float(value_str)
-                return value * multiplier
-            except ValueError:
-                continue
+                return float(val) * mul
+            except ValueError as e:
+                raise ValueError(f"Invalid duration number: {val!r}") from e
 
     raise ValueError(
-        f"Invalid duration format: '{duration_str}'. "
-        f"Use formats like '30d', '1w', '2M', '1y', '5h', '10s'."
+        f"Invalid duration format: {duration_str!r}. "
+        "Use formats like '30d', '1w', '2M', '1y', '5h', '10s'."
     )
 
 
-def compress_to_tar_gz(
-    input_path: Path, output_path: Path, older_than: float | None = None
-):
+# ---------------------------
+# Format detection
+# ---------------------------
+
+XZ_AVAILABLE = True
+try:
+    import lzma  # noqa: F401
+except Exception:
+    XZ_AVAILABLE = False
+
+TAR_READ_OPENER = {
+    "tar": lambda path: tarfile.open(path, "r:"),
+    "targz": lambda path: tarfile.open(path, "r:gz"),
+    "tarbz2": lambda path: tarfile.open(path, "r:bz2"),
+    "tarxz": lambda path: tarfile.open(path, "r:xz"),
+}
+
+TAR_WRITE_OPENER = {
+    "tar": lambda path: tarfile.open(path, "w:"),
+    "targz": lambda path: tarfile.open(path, "w:gz"),
+    "tarbz2": lambda path: tarfile.open(path, "w:bz2"),
+    "tarxz": lambda path: tarfile.open(path, "w:xz"),
+}
+
+SINGLE_FILE_WRITE_OPENER = {
+    "gz": gzip.open,
+    "bz2": bz2.open,
+    "xz": (None if not XZ_AVAILABLE else __import__("lzma").open),
+}
+
+SINGLE_FILE_READ_OPENER = {
+    "gz": gzip.open,
+    "bz2": bz2.open,
+    "xz": (None if not XZ_AVAILABLE else __import__("lzma").open),
+}
+
+
+def _lower_name(p: Path) -> str:
+    return p.name.lower()
+
+
+def detect_kind(path: Path) -> str:
     """
-    Compress the input file or folder to a .tar.gz archive.
+    Detect archive/compression kind.
+    Returns one of:
+      tar, targz, tarbz2, tarxz,
+      zip,
+      gz, bz2, xz,
+      unknown
 
-    Args:
-        input_path (Path):
-            Path to the file or directory to compress.
-        output_path (Path):
-            Path for the output .tar.gz archive.
-        older_than (float | None):
-            Only include files older than this many seconds (None for no age filter).
-
-    Raises:
-        ValueError:
-            If input_path is neither a file nor a directory.
-
+    Priority:
+      1) extension-based
+      2) simple magic sniff (zip/gz/bz2/xz) when extension doesn't help
     """
-    # Collect all files to compress
-    files_to_compress = []
-    current_time = time.time()
-    age_threshold = current_time - (older_than or 0)
+    n = _lower_name(path)
 
-    if input_path.is_file():
-        if older_than is None or input_path.stat().st_mtime < age_threshold:
-            files_to_compress = [(str(input_path), input_path.name)]
-    elif input_path.is_dir():
-        for file in input_path.rglob("*"):
-            if file.is_file() and (
-                older_than is None or file.stat().st_mtime < age_threshold
-            ):
-                arcname = file.relative_to(input_path.parent)
-                files_to_compress.append((str(file), str(arcname)))
-    else:
-        raise ValueError(
-            f"Input path '{input_path}' is neither a file nor a directory."
-        )
+    # tar variants first
+    if n.endswith(".tar"):
+        return "tar"
+    if n.endswith((".tar.gz", ".tgz")):
+        return "targz"
+    if n.endswith((".tar.bz2", ".tbz2", ".tbz")):
+        return "tarbz2"
+    if n.endswith((".tar.xz", ".txz")):
+        return "tarxz"
 
-    total_files = len(files_to_compress)
-    completed = 0
+    # zip
+    if n.endswith(".zip"):
+        return "zip"
 
-    with tarfile.open(output_path, "w:gz") as tar:
-        for file_path, arcname in files_to_compress:
-            tar.add(file_path, arcname=arcname)
-            completed += 1
-            print(
-                f"\rCompressing {completed} of {total_files} files...",
-                end="",
-                flush=True,
-            )
+    # single-file compressors
+    if n.endswith(".gz"):
+        return "gz"
+    if n.endswith(".bz2"):
+        return "bz2"
+    if n.endswith(".xz"):
+        return "xz"
 
-    print()  # New line after progress
+    # magic sniff fallback
+    try:
+        with open(path, "rb") as f:
+            head = f.read(8)
+    except OSError:
+        return "unknown"
+
+    if (
+        head.startswith(b"PK\x03\x04")
+        or head.startswith(b"PK\x05\x06")
+        or head.startswith(b"PK\x07\x08")
+    ):
+        return "zip"
+    if head[:2] == b"\x1f\x8b":
+        return "gz"
+    if head[:3] == b"BZh":
+        return "bz2"
+    if head.startswith(b"\xfd7zXZ\x00"):
+        return "xz"
+
+    return "unknown"
 
 
-def verify_archive(archive_path: Path) -> bool:
+def infer_pack_type_from_output(out: Path, explicit: Optional[str]) -> str:
+    if explicit:
+        return explicit.lower()
+
+    n = out.name.lower()
+    if n.endswith((".tar.gz", ".tgz")):
+        return "tar.gz"
+    if n.endswith((".tar.bz2", ".tbz2", ".tbz")):
+        return "tar.bz2"
+    if n.endswith((".tar.xz", ".txz")):
+        return "tar.xz"
+    if n.endswith(".tar"):
+        return "tar"
+    if n.endswith(".zip"):
+        return "zip"
+    if n.endswith(".gz"):
+        return "gz"
+    if n.endswith(".bz2"):
+        return "bz2"
+    if n.endswith(".xz"):
+        return "xz"
+    # default
+    return "tar.gz"
+
+
+# ---------------------------
+# Safety helpers
+# ---------------------------
+
+
+def refuse_overwrite(path: Path, force: bool) -> None:
+    if path.exists() and not force:
+        raise FileExistsError(f"Refusing to overwrite: {path} (use -f/--force)")
+
+
+def ensure_dir(p: Path) -> None:
+    p.mkdir(parents=True, exist_ok=True)
+
+
+def is_within_directory(base: Path, target: Path) -> bool:
     """
-    Verify the integrity of a tar.gz or zip archive using SHA256 checksums.
-
-    Args:
-        archive_path (Path): Path to the archive to verify.
-
-    Returns:
-        bool: True if verification passes, False otherwise.
-
+    True if target resolves within base (prevents path traversal).
     """
     try:
-        if archive_path.suffix == ".gz" or ".tar.gz" in str(archive_path):
-            # For tar.gz, extract and hash each file
-            with tarfile.open(archive_path, "r:gz") as tar:
-                for member in tar.getmembers():
-                    if member.isfile():
-                        f = tar.extractfile(member)
-                        if f:
-                            hashlib.sha256(f.read()).hexdigest()
-        elif archive_path.suffix == ".zip":
-            # For zip, check CRC32 (built-in integrity check)
-            with zipfile.ZipFile(archive_path, "r") as zipf:
-                for info in zipf.filelist:
-                    with zipf.open(info) as f:
-                        hashlib.sha256(f.read()).hexdigest()
+        base_r = base.resolve()
+        target_r = target.resolve()
+        target_r.relative_to(base_r)
         return True
+    except Exception:
+        return False
+
+
+def safe_extract_tar(tar: tarfile.TarFile, dest: Path, force: bool) -> None:
+    """
+    Extract tar safely into dest:
+      - block absolute paths
+      - block .. traversal
+      - refuse overwrite unless force
+    """
+    for member in tar.getmembers():
+        # TarInfo.name is a posix-style path
+        name = member.name
+
+        # Disallow absolute paths and drive letters-ish
+        if name.startswith("/") or name.startswith("\\") or ":" in Path(name).drive:
+            raise ValueError(f"Unsafe tar member path (absolute): {name}")
+
+        out_path = dest / name
+        if not is_within_directory(dest, out_path):
+            raise ValueError(f"Unsafe tar member path (traversal): {name}")
+
+        # Refuse overwrite for files/links
+        if member.isfile() or member.islnk() or member.issym():
+            if out_path.exists() and not force:
+                raise FileExistsError(
+                    f"Refusing to overwrite extracted file: {out_path} (use -f)"
+                )
+
+    # If all members pass, extract
+    tar.extractall(path=dest)
+
+
+def safe_extract_zip(zf: zipfile.ZipFile, dest: Path, force: bool) -> None:
+    """
+    Extract zip safely into dest:
+      - block absolute paths
+      - block .. traversal
+      - refuse overwrite unless force
+    """
+    for info in zf.infolist():
+        name = info.filename
+
+        if name.startswith("/") or name.startswith("\\"):
+            raise ValueError(f"Unsafe zip entry path (absolute): {name}")
+
+        out_path = dest / name
+        if not is_within_directory(dest, out_path):
+            raise ValueError(f"Unsafe zip entry path (traversal): {name}")
+
+        # zip entries ending with / are directories
+        if not name.endswith("/"):
+            if out_path.exists() and not force:
+                raise FileExistsError(
+                    f"Refusing to overwrite extracted file: {out_path} (use -f)"
+                )
+
+    zf.extractall(path=dest)
+
+
+# ---------------------------
+# Packing helpers
+# ---------------------------
+
+
+def iter_files_for_pack(root: Path, older_than: Optional[float]) -> Iterable[Path]:
+    """
+    Yield files under root (or root itself if file) filtered by mtime age threshold.
+    older_than = seconds; include only files with mtime < now - older_than
+    """
+    now = time.time()
+    threshold = now - older_than if older_than is not None else None
+
+    def include(p: Path) -> bool:
+        if threshold is None:
+            return True
+        try:
+            return p.stat().st_mtime < threshold
+        except OSError:
+            return False
+
+    if root.is_file():
+        if include(root):
+            yield root
+        return
+
+    if root.is_dir():
+        for p in root.rglob("*"):
+            if p.is_file() and include(p):
+                yield p
+        return
+
+    raise ValueError(f"Input path is neither file nor directory: {root}")
+
+
+def compute_input_size(paths: Sequence[Path], older_than: Optional[float]) -> int:
+    total = 0
+    for p in paths:
+        for f in iter_files_for_pack(p, older_than):
+            try:
+                total += f.stat().st_size
+            except OSError:
+                pass
+    return total
+
+
+def add_to_tar(
+    tar: tarfile.TarFile, input_path: Path, older_than: Optional[float], base_mode: str
+) -> int:
+    """
+    Add files from input_path into tar.
+    base_mode controls how arcnames are created:
+      - "parent": relative to input_path.parent (like your script)
+      - "self":   relative to input_path (keeps directory contents without parent)
+    Returns number of files added.
+    """
+    count = 0
+    input_path = input_path.resolve()
+
+    if input_path.is_file():
+        arcname = input_path.name
+        tar.add(str(input_path), arcname=arcname)
+        return 1
+
+    if input_path.is_dir():
+        for f in iter_files_for_pack(input_path, older_than):
+            if base_mode == "parent":
+                arcname = f.relative_to(input_path.parent)
+            else:
+                arcname = f.relative_to(input_path)
+                # include top folder name to avoid dumping into root
+                arcname = Path(input_path.name) / arcname
+            tar.add(str(f), arcname=str(arcname))
+            count += 1
+        return count
+
+    raise ValueError(f"Input path is neither file nor directory: {input_path}")
+
+
+def add_to_zip(
+    zf: zipfile.ZipFile, input_path: Path, older_than: Optional[float], base_mode: str
+) -> int:
+    count = 0
+    input_path = input_path.resolve()
+
+    if input_path.is_file():
+        zf.write(str(input_path), arcname=input_path.name)
+        return 1
+
+    if input_path.is_dir():
+        for f in iter_files_for_pack(input_path, older_than):
+            if base_mode == "parent":
+                arcname = f.relative_to(input_path.parent)
+            else:
+                arcname = Path(input_path.name) / f.relative_to(input_path)
+            zf.write(str(f), arcname=str(arcname))
+            count += 1
+        return count
+
+    raise ValueError(f"Input path is neither file nor directory: {input_path}")
+
+
+# ---------------------------
+# Verify helpers (stdlib)
+# ---------------------------
+
+
+def verify_archive(path: Path) -> bool:
+    """
+    Best-effort verification:
+      - zip: zipfile.testzip() (CRC check)
+      - tar*: iterate members + attempt to read contents (spot corruption)
+      - gz/bz2/xz: attempt full decompression stream
+    """
+    kind = detect_kind(path)
+    try:
+        if kind == "zip":
+            with zipfile.ZipFile(path, "r") as zf:
+                bad = zf.testzip()
+                return bad is None
+
+        if kind in ("tar", "targz", "tarbz2", "tarxz"):
+            opener = TAR_READ_OPENER.get(kind)
+            if not opener:
+                raise ValueError(f"Unsupported format: {kind}")
+            with opener(path) as tf:
+                for m in tf.getmembers():
+                    if m.isfile():
+                        f = tf.extractfile(m)
+                        if f is None:
+                            continue
+                        # read stream to ensure it’s decodable
+                        while f.read(1024 * 1024):
+                            pass
+            return True
+
+        if kind in ("gz", "bz2", "xz"):
+            # full stream read
+            opener = SINGLE_FILE_READ_OPENER.get(kind)
+            if not opener:
+                raise ValueError(f"Unsupported format: {kind}")
+            if opener is None:
+                raise RuntimeError("xz verify requires lzma support")
+            with opener(path, "rb") as f:
+                while f.read(1024 * 1024):
+                    pass
+            return True
+
+        return False
     except Exception as e:
         logger.error(f"Verification failed: {e}")
         return False
 
 
-def compress_to_zip(
-    input_path: Path, output_path: Path, older_than: float | None = None
-):
+# ---------------------------
+# Unpack / Decompress
+# ---------------------------
+
+
+def _default_single_out_name(src: Path) -> str:
+    n = src.name
+    for suf in (".gz", ".bz2", ".xz"):
+        if n.lower().endswith(suf):
+            return n[: -len(suf)]
+    return n + ".out"
+
+
+def unpack_one(src: Path, outdir: Path, force: bool) -> None:
+    kind = detect_kind(src)
+    ensure_dir(outdir)
+
+    if kind == "zip":
+        with zipfile.ZipFile(src, "r") as zf:
+            safe_extract_zip(zf, outdir, force)
+        return
+
+    if kind in ("tar", "targz", "tarbz2", "tarxz"):
+        opener = TAR_READ_OPENER.get(kind)
+        if not opener:
+            raise ValueError(f"Unsupported format: {kind}")
+        if kind == "tarxz" and not XZ_AVAILABLE:
+            raise RuntimeError(
+                "This Python build lacks lzma; cannot unpack .tar.xz/.txz"
+            )
+        with opener(src) as tf:
+            safe_extract_tar(tf, outdir, force)
+        return
+
+    # single-file decompression
+    if kind in ("gz", "bz2", "xz"):
+        if kind == "xz" and not XZ_AVAILABLE:
+            raise RuntimeError("This Python build lacks lzma; cannot unpack .xz")
+        out_path = outdir / _default_single_out_name(src)
+        refuse_overwrite(out_path, force)
+
+        opener = SINGLE_FILE_READ_OPENER.get(kind)
+        if not opener:
+            raise ValueError(f"Unsupported format: {kind}")
+        if opener is None:
+            raise RuntimeError("xz unpack requires lzma support")
+
+        with opener(src, "rb") as fin, open(out_path, "wb") as fout:
+            shutil.copyfileobj(fin, fout, length=1024 * 1024)
+        return
+
+    raise ValueError(f"Unsupported/unknown format: {src} (kind={kind})")
+
+
+# ---------------------------
+# Pack / Compress
+# ---------------------------
+
+
+def pack(
+    output: Path,
+    inputs: Sequence[Path],
+    pack_type: str,
+    force: bool,
+    older_than: Optional[float],
+    base_mode: str,
+    level: Optional[int],
+) -> None:
     """
-    Compress the input file or folder to a .zip archive.
-
-    Args:
-        input_path (Path):
-            Path to the file or directory to compress.
-        output_path (Path):
-            Path for the output .zip archive.
-        older_than (float | None):
-            Only include files older than this many seconds (None for no age filter).
-
-    Raises:
-        ValueError:
-            If input_path is neither a file nor a directory.
-
+    pack_type in:
+      tar, tar.gz, tar.bz2, tar.xz, zip, gz, bz2, xz
     """
-    current_time = time.time()
-    age_threshold = current_time - (older_than or 0)
+    refuse_overwrite(output, force)
 
-    with zipfile.ZipFile(output_path, "w", zipfile.ZIP_DEFLATED) as zipf:
-        if input_path.is_file():
-            if older_than is None or input_path.stat().st_mtime < age_threshold:
-                zipf.write(str(input_path), input_path.name)
-        elif input_path.is_dir():
-            for file in input_path.rglob("*"):
-                if file.is_file() and (
-                    older_than is None or file.stat().st_mtime < age_threshold
-                ):
-                    arcname = file.relative_to(input_path.parent)
-                    zipf.write(str(file), str(arcname))
-        else:
-            raise ValueError(
-                f"Input path '{input_path}' is neither a file nor a directory."
+    pt = pack_type.lower()
+
+    if pt in ("gz", "bz2", "xz"):
+        if len(inputs) != 1:
+            raise ValueError(f"{pt} requires exactly one input file")
+        inp = inputs[0].resolve()
+        if not inp.is_file():
+            raise ValueError(f"{pt} requires a file input, got: {inp}")
+        # older-than applies to single file: if not old enough, create empty? Better: error.
+        if older_than is not None:
+            now = time.time()
+            threshold = now - older_than
+            if inp.stat().st_mtime >= threshold:
+                raise ValueError(
+                    f"Input file is not older than {older_than} seconds: {inp}"
+                )
+
+        if pt == "xz" and not XZ_AVAILABLE:
+            raise RuntimeError("This Python build lacks lzma; cannot create .xz")
+
+        opener = SINGLE_FILE_WRITE_OPENER.get(pt)
+        if not opener:
+            raise ValueError(f"Unsupported format: {pt}")
+
+        # compressionlevel supported by gzip/bz2/lzma in modern Python
+        kwargs = {}
+        if level is not None:
+            kwargs["compresslevel"] = level
+
+        with open(inp, "rb") as fin, opener(output, "wb", **kwargs) as fout:
+            shutil.copyfileobj(fin, fout, length=1024 * 1024)
+        return
+
+    if pt in ("tar", "tar.gz", "tar.bz2", "tar.xz"):
+        opener = TAR_WRITE_OPENER.get(pt)
+        if not opener:
+            raise ValueError(f"Unsupported format: {pt}")
+        if pt == "tar.xz" and not XZ_AVAILABLE:
+            raise RuntimeError(
+                "This Python build lacks lzma; cannot create .tar.xz/.txz"
             )
 
+        # tarfile has compresslevel for gzip/bz2 in newer Pythons; lzma uses preset
+        # We'll pass if supported, else ignore gracefully.
+        tf_kwargs = {}
+        if level is not None:
+            # gzip/bz2: compresslevel; xz: preset
+            if pt in ("tar.gz", "tar.bz2"):
+                tf_kwargs["compresslevel"] = level
+            elif pt == "tar.xz":
+                tf_kwargs["preset"] = level
 
-def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
-    """Parse command-line arguments.
+        added = 0
+        with opener(output, **tf_kwargs) as tf:
+            for inp in inputs:
+                added += add_to_tar(tf, inp, older_than, base_mode)
+        if added == 0:
+            logger.warning("No files matched filters; created an empty tar archive.")
+        return
 
-    Args:
-        argv (list[str] | None):
-            List of command-line arguments. If None, uses sys.argv.
+    if pt == "zip":
+        # zipfile compressionlevel supported in newer versions; handle gracefully.
+        z_kwargs = {}
+        if level is not None:
+            z_kwargs["compresslevel"] = level
 
-    Returns:
-        argparse.Namespace:
-            Parsed arguments.
+        added = 0
+        with zipfile.ZipFile(
+            output, "w", compression=zipfile.ZIP_DEFLATED, **z_kwargs
+        ) as zf:
+            for inp in inputs:
+                added += add_to_zip(zf, inp, older_than, base_mode)
+        if added == 0:
+            logger.warning("No files matched filters; created an empty zip archive.")
+        return
 
-    """
-    parser = argparse.ArgumentParser(
-        description="Compress a file or folder into a .tar.gz or .zip archive."
+    raise ValueError(f"Unknown pack type: {pack_type}")
+
+
+# ---------------------------
+# CLI
+# ---------------------------
+
+
+def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
+    p = argparse.ArgumentParser(
+        description="pypack.py — stdlib-only safe pack/unpack (zip, tar.*, gz/bz2/xz)."
     )
-    parser.add_argument(
-        "input_path", type=str, help="Path to the file or folder to compress"
+    p.add_argument(
+        "-v",
+        "--verbose",
+        action="count",
+        default=0,
+        help="Increase verbosity (repeatable)",
     )
-    parser.add_argument(
-        "--format",
-        type=str,
-        choices=["tar.gz", "zip"],
-        default=None,
-        help="Compression format: tar.gz or zip. If not specified, auto-detects based on input type.",
+
+    sub = p.add_subparsers(dest="cmd", required=True)
+
+    u = sub.add_parser(
+        "unpack",
+        help="Unpack/decompress archives and compressed files.",
     )
-    parser.add_argument(
-        "--output",
-        type=str,
-        default=None,
-        help="Optional output file path. If not specified, will be created in the input's directory.",
+    u.add_argument(
+        "-f",
+        "--force",
+        action="store_true",
+        help="Overwrite existing files on extract/write.",
     )
-    parser.add_argument(
+    u.add_argument(
+        "-C",
+        "--directory",
+        default=".",
+        help="Destination directory (default: current).",
+    )
+    u.add_argument(
         "--verify",
         action="store_true",
-        help="Verify archive integrity after creation using SHA256 checksums.",
+        help="Verify archive stream before unpacking.",
     )
-    parser.add_argument(
-        "--move",
+    u.add_argument(
+        "files",
+        nargs="+",
+        help="Archives/compressed files to unpack.",
+    )
+
+    k = sub.add_parser(
+        "pack",
+        help="Create archives or compressed files.",
+    )
+    k.add_argument(
+        "-f",
+        "--force",
         action="store_true",
-        help="Delete the source file/directory after successful compression.",
+        help="Overwrite output if it exists.",
     )
-    parser.add_argument(
+    k.add_argument(
+        "-t",
+        "--type",
+        dest="type_",
+        choices=["tar", "tar.gz", "tar.bz2", "tar.xz", "zip", "gz", "bz2", "xz"],
+        help="Output type (default: inferred from output name; fallback tar.gz).",
+    )
+    k.add_argument(
+        "-l",
+        "--level",
+        type=int,
+        default=None,
+        help="Compression level (varies by format; e.g. gzip/bz2 1-9, zip 0-9, xz preset 0-9).",
+    )
+    k.add_argument(
         "--older-than",
         type=str,
         default=None,
-        help="Only compress files older than specified duration (e.g., '30d', '1w', '2M').",
+        help="Only include files older than duration (e.g. '30d', '1w', '2M', '5h').",
     )
-    return parser.parse_args(argv)
+    k.add_argument(
+        "--base",
+        choices=["parent", "self"],
+        default="self",
+        help="Archive path layout for directories: "
+        "'self' stores dir as a top folder (default), "
+        "'parent' stores paths relative to input's parent (like your script).",
+    )
+    k.add_argument(
+        "--verify", action="store_true", help="Verify archive after creation."
+    )
+    k.add_argument(
+        "--move", action="store_true", help="Delete inputs after successful pack."
+    )
+    k.add_argument("output", help="Output archive/compressed file name.")
+    k.add_argument("inputs", nargs="+", help="Input files and/or directories.")
+
+    return p.parse_args(list(argv) if argv is not None else None)
 
 
-def main():
-    """
-    Main entry point for the compression script.
-
-    Parses command-line arguments, validates inputs, and performs the compression
-    operation with appropriate logging and error handling.
-
-    Args:
-        None
-
-    Returns:
-        None
-
-    """
-    args = parse_args()
-
-    handler = logging.StreamHandler()
-    handler.setFormatter(ColorFormatter("%(levelname)s: %(message)s"))
-    logger.addHandler(handler)
-    logger.setLevel(logging.INFO)
-
-    input_path = Path(args.input_path).resolve()
-    if not input_path.exists():
-        logger.error(f"The path '{input_path}' does not exist.")
-        raise FileNotFoundError(f"The path '{input_path}' does not exist.")
-    if not (input_path.is_file() or input_path.is_dir()):
-        logger.error(
-            f"The path '{input_path}' is not a file or directory. Only files and folders are supported."
-        )
-        raise ValueError(
-            f"The path '{input_path}' is not a file or directory. Only files and folders are supported."
-        )
-
-    # Parse older_than argument
-    older_than: float | None = None
-    if args.older_than:
-        try:
-            older_than = parse_time_duration(args.older_than)
-        except ValueError:
-            logger.exception("Error parsing older-than argument")
-            sys.exit(1)
-
-    # Auto-detect format if not specified
-    if args.format is None:
-        args.format = "zip" if input_path.is_file() else "tar.gz"
-        logger.info(f"Auto-detected format: {args.format}")
-
-    if args.output:
-        output_path = Path(args.output).resolve()
-    else:
-        input_name = input_path.stem if input_path.is_file() else input_path.name
-        output_name = f"{input_name}.{args.format}"
-        output_path = input_path.parent / output_name
-
-    if output_path.exists():
-        logger.warning(
-            f"Output file '{output_path}' already exists and will be overwritten."
-        )
+def main(argv: Optional[Sequence[str]] = None) -> int:
+    args = parse_args(argv)
+    setup_logging(args.verbose)
 
     try:
-        # Calculate input size (only for files that will be compressed)
-        input_size = 0
-        current_time = time.time()
-        age_threshold = current_time - (older_than or 0)
+        if args.cmd == "unpack":
+            outdir = Path(args.directory).resolve()
+            ensure_dir(outdir)
 
-        if input_path.is_file():
-            if older_than is None or input_path.stat().st_mtime < age_threshold:
-                input_size = input_path.stat().st_size
-        elif input_path.is_dir():
-            for file in input_path.rglob("*"):
-                if file.is_file() and (
-                    older_than is None or file.stat().st_mtime < age_threshold
-                ):
-                    input_size += file.stat().st_size
+            for f in args.files:
+                src = Path(f).resolve()
+                if not src.exists():
+                    raise FileNotFoundError(f"Not found: {src}")
 
-        logger.info(f"Creating {output_path} from {input_path}...")
-        if args.format == "tar.gz":
-            compress_to_tar_gz(input_path, output_path, older_than)
-        else:
-            compress_to_zip(input_path, output_path, older_than)
+                if args.verify:
+                    logger.info(f"Verifying {src} ...")
+                    if not verify_archive(src):
+                        raise RuntimeError(f"Verification failed: {src}")
 
-        # Calculate output size and compression ratio
-        output_size = output_path.stat().st_size
-        ratio = input_size / output_size if output_size > 0 else 0
-        logger.info(f"Successfully created {output_path}")
-        logger.info(
-            f"Compressed: {input_size} bytes → {output_size} bytes ({ratio:.2f}x)"
+                logger.info(f"Unpacking {src} -> {outdir}")
+                unpack_one(src, outdir, args.force)
+            return 0
+
+        # pack
+        output = Path(args.output).resolve()
+        inputs = [Path(x).resolve() for x in args.inputs]
+
+        for inp in inputs:
+            if not inp.exists():
+                raise FileNotFoundError(f"Not found: {inp}")
+            if not (inp.is_file() or inp.is_dir()):
+                raise ValueError(f"Unsupported input (not file/dir): {inp}")
+
+        older_than = parse_time_duration(args.older_than) if args.older_than else None
+        pack_type = infer_pack_type_from_output(output, args.type_)
+
+        if pack_type in ("tar.xz", "xz") and not XZ_AVAILABLE:
+            raise RuntimeError(
+                "This Python build lacks lzma; xz support is unavailable."
+            )
+
+        # compute and log sizes
+        input_size = compute_input_size(inputs, older_than)
+        logger.info(f"Creating {output} ({pack_type}) from {len(inputs)} input(s)...")
+
+        pack(
+            output=output,
+            inputs=inputs,
+            pack_type=pack_type,
+            force=args.force,
+            older_than=older_than,
+            base_mode=args.base,
+            level=args.level,
         )
 
-        # Verify archive if requested
+        out_size = output.stat().st_size if output.exists() else 0
+        ratio = (input_size / out_size) if out_size > 0 else 0.0
+        logger.info(f"Created {output}")
+        logger.info(
+            f"Compressed: {input_size} bytes -> {out_size} bytes ({ratio:.2f}x)"
+        )
+
         if args.verify:
             logger.info("Verifying archive integrity...")
-            if verify_archive(output_path):
-                logger.info("Archive verification passed.")
+            if verify_archive(output):
+                logger.info("Verification passed.")
             else:
-                logger.error("Archive verification failed!")
-                sys.exit(4)
+                raise RuntimeError("Verification failed.")
 
-        # Move/delete source if requested
         if args.move:
-            try:
-                if input_path.is_file():
-                    input_path.unlink()
-                    logger.info(f"Deleted source file: {input_path}")
-                elif input_path.is_dir():
-                    import shutil
+            # Only remove after successful creation (+ verify if requested)
+            for inp in inputs:
+                try:
+                    if inp.is_file():
+                        inp.unlink()
+                        logger.info(f"Deleted source file: {inp}")
+                    elif inp.is_dir():
+                        shutil.rmtree(inp)
+                        logger.info(f"Deleted source directory: {inp}")
+                except Exception as e:
+                    raise RuntimeError(f"Failed to delete source {inp}: {e}") from e
 
-                    shutil.rmtree(input_path)
-                    logger.info(f"Deleted source directory: {input_path}")
-            except Exception as e:
-                logger.error(f"Failed to delete source: {e}")
-                sys.exit(5)
-    except PermissionError:
-        logger.exception(f"Permission denied when writing to '{output_path}'.")
-        sys.exit(2)
-    except Exception:
-        logger.exception("Error during compression")
-        sys.exit(3)
+        return 0
+
+    except FileExistsError as e:
+        logger.error(str(e))
+        return 1
+    except (FileNotFoundError, ValueError) as e:
+        logger.error(str(e))
+        return 2
+    except PermissionError as e:
+        logger.error(f"Permission error: {e}")
+        return 3
+    except (tarfile.TarError, zipfile.BadZipFile) as e:
+        logger.error(f"Archive error: {e}")
+        return 4
+    except Exception as e:
+        logger.error(f"Unexpected error: {e}")
+        return 5
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())
